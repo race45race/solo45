@@ -10,6 +10,7 @@ import asyncio
 import base64
 import collections
 import hashlib
+import hmac
 import itertools
 import json
 import logging
@@ -699,17 +700,22 @@ class Pool:
     async def serve_api(self, reader, writer):
         try:
             method, path = (await asyncio.wait_for(reader.readline(), 5)).decode().split()[:2]
-            length = 0
+            length, token = 0, ""
             while True:
                 line = await asyncio.wait_for(reader.readline(), 5)
                 if line in (b"\r\n", b"\n", b""):
                     break
                 if line.lower().startswith(b"content-length:"):
                     length = int(line.split(b":")[1])
+                elif line.lower().startswith(b"x-solo45-token:"):
+                    token = line.split(b":", 1)[1].strip().decode(errors="replace")
             status, reply = 200, None
             if method == "POST" and path in ("/api/worker", "/api/settings"):
-                # settings changes are only accepted from the Umbrel itself (the dashboard)
-                if (writer.get_extra_info("peername") or ("",))[0] != "127.0.0.1":
+                # settings changes are only accepted from the Umbrel itself, or from the dashboard with
+                # the app's shared secret (the Umbrel app runs the dashboard in its own container)
+                secret = os.environ.get("SOLO45_API_TOKEN", "")
+                local = (writer.get_extra_info("peername") or ("",))[0] == "127.0.0.1"
+                if not (local or (secret and hmac.compare_digest(token, secret))):
                     status, reply = 403, {"error": "settings can only be changed from the Umbrel"}
                 else:
                     try:

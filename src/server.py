@@ -854,7 +854,10 @@ def history_sample(hours):
 
 
 def post_json(url, data, timeout=5):
-    req = urllib.request.Request(url, json.dumps(data).encode(), {"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    if os.environ.get("SOLO45_API_TOKEN"):  # the Umbrel app's shared secret for changing Solo45 settings
+        headers["X-Solo45-Token"] = os.environ["SOLO45_API_TOKEN"]
+    req = urllib.request.Request(url, json.dumps(data).encode(), headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, json.load(r)
