@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""Checks the pool's consensus-critical code against the live node.
+
+Read-only RPC calls, block proposals (validated by bitcoind, never accepted)
+and one submitblock with a block that has no proof of work, which bitcoind
+rejects as "high-hash". It proves the found-block path produces a block the
+node can decode. The stratum test runs a throwaway pool on port 3399 and
+mines low-difficulty shares with a separately written miner.
+"""
+import asyncio
+import hashlib
+import json
+import os
+import random
+import struct
+import sys
+import time
+import urllib.error
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import pool as P  # noqa: E402
+
+results = []
+
+
+def check(name, ok, detail=""):
+    results.append(ok)
+    print("%s  %s %s" % ("PASS" if ok else "FAIL", name, detail), flush=True)
+
+
+def dsha(b):
+    return hashlib.sha256(hashlib.sha256(b).digest()).digest()
+
+
+cfg = P.load_config()
+rpc = P.RPC(cfg["rpc_url"], cfg["rpc_cookie"], cfg["rpc_user"], cfg["rpc_pass"])
+print("node:", rpc.call("getnetworkinfo")["subversion"])
+
+# 1. header hashing and byte order against the real tip
+best = rpc.call("getbestblockhash")
+hdr = bytes.fromhex(rpc.call("getblockheader", best, False))
+check("header hash matches tip", P.sha256d(hdr)[::-1].hex() == best)
+
+# 2. merkle branch against a real block, and against a naive tree for small sizes
+blk = rpc.call("getblock", best, 1)
+txids = [bytes.fromhex(t)[::-1] for t in blk["tx"]]
+root = txids[0]
+for h in P.merkle_branch(txids[1:]):
+    root = P.sha256d(root + h)
+check("merkle root of real block", root[::-1].hex() == blk["merkleroot"], "(%d txs)" % len(txids))
+
+
+def naive_root(hs):
+    while len(hs) > 1:
+        if len(hs) % 2:
+            hs = hs + [hs[-1]]
+        hs = [dsha(hs[i] + hs[i + 1]) for i in range(0, len(hs), 2)]
+    return hs[0]
+
+
+ok = True
+for n in range(1, 40):
+    hs = [os.urandom(32) for _ in range(n)]
+    r = hs[0]
+    for h in P.merkle_branch(hs[1:]):
+        r = P.sha256d(r + h)
+    ok &= r == naive_root(hs)
+check("merkle branch, 1-39 txs vs naive tree", ok)
+
+# 3. BIP34 height encoding matches the real coinbase
+cb_script = rpc.call("getblock", best, 2)["tx"][0]["vin"][0]["coinbase"]
+check("BIP34 height encoding", cb_script.startswith(P.push(P.script_num(blk["height"])).hex()))
+check("script_num edge cases", [P.script_num(x).hex() for x in (1, 127, 128, 255, 256, 32768)]
+      == ["01", "7f", "8000", "ff00", "0001", "008000"])
+
+# 4. coinbase contents and a full block proposal
+tpl = rpc.call("getblocktemplate", {"rules": ["segwit"]})
+spk = bytes.fromhex(rpc.call("validateaddress", cfg["default_address"])["scriptPubKey"])
+job = P.Job("t", tpl, cfg["coinbase_tag"].encode())
+coinbase = job.coinb1 + bytes(12) + job.coinb2(spk)
+dec = rpc.call("decoderawtransaction", coinbase.hex())
+check("coinbase pays full reward to payout address",
+      round(dec["vout"][0]["value"] * 1e8) == tpl["coinbasevalue"] and dec["vout"][0]["scriptPubKey"]["hex"] == spk.hex(),
+      "(%.8f BTC)" % (tpl["coinbasevalue"] / 1e8))
+check("coinbase has witness commitment", len(dec["vout"]) == 2 and dec["vout"][1]["scriptPubKey"]["hex"] == tpl.get("default_witness_commitment"))
+header = job.header(coinbase, job.version, job.curtime, 0)
+res = rpc.call("getblocktemplate", {"mode": "proposal", "data": job.block(header, coinbase).hex()})
+check("bitcoind accepts full block proposal", res is None, "(%d txs, result %r)" % (len(job.tx_data) + 1, res))
+for n_tx in (0, 1, 2, 3):  # small blocks exercise odd/even merkle edge cases
+    # the first n_tx transactions that have no in-template parents
+    txs = [t for t in tpl["transactions"] if not t.get("depends")][:n_tx]
+    if len(txs) < n_tx:
+        break
+    small = dict(tpl, transactions=txs, coinbasevalue=tpl["coinbasevalue"] - sum(t["fee"] for t in tpl["transactions"]) + sum(t["fee"] for t in txs))
+    small.pop("default_witness_commitment", None)
+    # witness commitment for the subset: merkle root of wtxids with the coinbase as zero
+    wtx = [bytes(32)] + [bytes.fromhex(t["hash"])[::-1] for t in txs]
+    commit = P.sha256d(naive_root(wtx) + bytes(32))
+    small["default_witness_commitment"] = "6a24aa21a9ed" + commit.hex()
+    small_job = P.Job("s", small, b"x")
+    cb = small_job.coinb1 + bytes(12) + small_job.coinb2(spk)
+    hd = small_job.header(cb, small_job.version, small_job.curtime, 0)
+    r = rpc.call("getblocktemplate", {"mode": "proposal", "data": small_job.block(hd, cb).hex()})
+    check("proposal with %d txs" % n_tx, r is None, "(result %r)" % r)
+
+
+# 5. stratum round trip with an independently written miner
+def miner_header(notify, en1, en2, ntime, nonce, version):
+    jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify
+    cb = bytes.fromhex(c1) + en1 + en2 + bytes.fromhex(c2)
+    mr = dsha(cb)
+    for b in branch:
+        mr = dsha(mr + bytes.fromhex(b))
+    pv = bytes.fromhex(prevh)
+    pv = b"".join(pv[i:i + 4][::-1] for i in range(0, 32, 4))
+    return struct.pack("<I", version) + pv + mr + struct.pack("<I", ntime) + bytes.fromhex(nbits)[::-1] + struct.pack("<I", nonce)
+
+
+def mine(notify, en1, en2, version, diff):
+    target = int(int("00000000ffff" + "0" * 52, 16) / diff)
+    ntime = int(notify[7], 16)
+    for nonce in range(1 << 32):
+        if int.from_bytes(dsha(miner_header(notify, en1, en2, ntime, nonce, version)), "little") <= target:
+            return ntime, nonce
+
+
+async def stratum_test():
+    import shutil
+    data = os.path.join(P.DATA_DIR, "selftest-data")
+    os.makedirs(data, exist_ok=True)
+    tcfg = dict(cfg, stratum_port=3399, api_port=3398, min_diff=0.0001, start_diff=0.0002)
+    pool = P.Pool(tcfg, data_dir=data)
+    pool.state = {"best_ever": {"diff": 0.0}, "blocks": [], "accepted_total": 0, "overrides": {}, "settings": {}}
+    await pool.start()
+    r, w = await asyncio.open_connection("127.0.0.1", 3399)
+    inbox = []
+
+    async def rpc_call(mid, method, params):
+        w.write((json.dumps({"id": mid, "method": method, "params": params}) + "\n").encode())
+        await w.drain()
+        while True:
+            m = json.loads(await asyncio.wait_for(r.readline(), 30))
+            if m.get("id") == mid:
+                return m
+            inbox.append(m)
+
+    def latest(method):
+        return [m["params"] for m in inbox if m.get("method") == method][-1]
+
+    cfg_reply = await rpc_call(1, "mining.configure", [["version-rolling"], {"version-rolling.mask": "ffffffff"}])
+    check("configure version rolling", cfg_reply["result"]["version-rolling.mask"] == "1fffe000")
+    sub = await rpc_call(2, "mining.subscribe", ["selftest/1.0"])
+    en1 = bytes.fromhex(sub["result"][1])
+    check("subscribe", sub["result"][2] == 8)
+    auth = await rpc_call(3, "mining.authorize", [cfg["default_address"] + ".selftest", "x"])
+    check("authorize", auth["result"] is True)
+    loop = asyncio.get_running_loop()
+    user = cfg["default_address"] + ".selftest"
+
+    async def drain():
+        while True:
+            try:
+                line = await asyncio.wait_for(r.readline(), 0.3)
+            except asyncio.TimeoutError:
+                return
+            inbox.append(json.loads(line))
+
+    async def mine_and_submit(mid, vbits=None):
+        # mine on the newest job; retry if a real block makes it stale meanwhile
+        for _ in range(3):
+            await drain()
+            n, d = latest("mining.notify"), latest("mining.set_difficulty")[0]
+            v = int(n[5], 16) if vbits is None else (int(n[5], 16) & ~0x1FFFE000) | vbits
+            e2 = os.urandom(8)
+            nt, no = await loop.run_in_executor(None, mine, n, en1, e2, v, d)
+            params = [user, n[0], e2.hex(), "%08x" % nt, "%08x" % no] + ([] if vbits is None else ["%08x" % vbits])
+            res = await rpc_call(mid, "mining.submit", params)
+            if not (res["error"] and res["error"][0] == 21):
+                return res, params, d
+            print("      (share went stale, a real block arrived - retrying)")
+        return res, params, d
+
+    t0 = time.time()
+    res, good, diff = await mine_and_submit(4)
+    check("valid share accepted", res["result"] is True, "(mined in %.1fs at diff %g)" % (time.time() - t0, diff))
+    res = await rpc_call(5, "mining.submit", good)
+    check("duplicate rejected", res["error"] and res["error"][0] == 22)
+    bad = good[:4] + ["%08x" % ((int(good[4], 16) + 1) & 0xFFFFFFFF)]
+    res = await rpc_call(6, "mining.submit", bad)
+    check("low-difficulty share rejected", res["error"] and res["error"][0] == 23)
+    res = await rpc_call(7, "mining.submit", [user, "nope"] + good[2:])
+    check("unknown job rejected", res["error"] and res["error"][0] == 21)
+
+    res, _, _ = await mine_and_submit(8, vbits=0x00006000)
+    check("version-rolled share accepted", res["result"] is True, "(%r)" % res["error"])
+
+    async def found_block_test():
+        # pretend the network target is trivial so the next share is a "block"
+        for j in pool.jobs.values():
+            j.target = 2 ** 256 - 1
+        orig_job = P.Job.__init__
+
+        def easy_job(self, *a, **k):  # jobs created during the test are "easy" too
+            orig_job(self, *a, **k)
+            self.target = 2 ** 256 - 1
+        P.Job.__init__ = easy_job
+        res, _, _ = await mine_and_submit(9)
+        P.Job.__init__ = orig_job
+        blocks = pool.state["blocks"]
+        check("found-block path submits and node decodes it",
+              res["result"] is True and blocks and blocks[-1]["result"] == "high-hash",
+              "(submitblock said %r)" % (blocks[-1]["result"] if blocks else None))
+
+    def post(data, path="/api/worker"):
+        # the settings endpoints, called the way the dashboard calls them
+        req = urllib.request.Request("http://127.0.0.1:3398" + path, json.dumps(data).encode(),
+                                     {"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                return resp.status, json.load(resp)
+        except urllib.error.HTTPError as e:
+            return e.code, json.load(e)
+
+    expected_accepted = 2
+    if "--no-submit" in sys.argv:  # skip it: each run leaves a high-hash line in debug.log
+        print("SKIP  found-block path (--no-submit)")
+    else:
+        await found_block_test()
+        expected_accepted = 3
+
+    st, rep = await loop.run_in_executor(None, post, {"name": "selftest", "diff": 0.0005})
+    await drain()
+    check("fixed difficulty applied and sent", st == 200 and latest("mining.set_difficulty")[0] == 0.0005, "(%s %r)" % (st, rep))
+    st, rep = await loop.run_in_executor(None, post, {"name": "selftest", "diff": 0.00001})
+    check("difficulty below minimum refused", st == 400)
+    st, rep = await loop.run_in_executor(None, post, {"name": "selftest", "share_seconds": 12})
+    check("share-time target saved", st == 200 and pool.state["overrides"]["selftest"] == {"share_seconds": 12.0})
+    st, rep = await loop.run_in_executor(None, post, {"name": "selftest"})
+    check("back to automatic", st == 200 and "selftest" not in pool.state["overrides"])
+    st, rep = await loop.run_in_executor(None, lambda: post({"template_refresh_s": 45}, "/api/settings"))
+    check("job update interval saved", st == 200 and pool.refresh_s() == 45)
+    st, rep = await loop.run_in_executor(None, lambda: post({"template_refresh_s": 500}, "/api/settings"))
+    check("job update interval over 120 s refused", st == 400 and pool.refresh_s() == 45)
+
+    def get_shares(since):
+        with urllib.request.urlopen("http://127.0.0.1:3398/api/shares?since=%d" % since, timeout=5) as resp:
+            return json.load(resp)["shares"]
+    feed = await loop.run_in_executor(None, get_shares, 0)
+    ok_n = sum(1 for s in feed if not s["rejected"])
+    reasons = sorted({s["rejected"] for s in feed if s["rejected"]})
+    later = await loop.run_in_executor(None, get_shares, feed[-1]["seq"] if feed else 0)
+    check("live share feed", ok_n == expected_accepted and {"duplicate", "low-diff"} <= set(reasons) and later == [],
+          "(%d accepted, rejected: %s)" % (ok_n, ", ".join(reasons)))
+
+    await asyncio.sleep(1)
+    snap = pool.snapshot()
+    check("api snapshot", snap["workers"] and snap["workers"][0]["accepted"] == expected_accepted,
+          "(accepted %s)" % (snap["workers"][0]["accepted"] if snap["workers"] else None))
+    for _ in range(40):
+        if pool.proposal["ok"] is not None:
+            break
+        await asyncio.sleep(0.5)
+    check("pool's own proposal check", pool.proposal["ok"] is True, "(%r)" % pool.proposal.get("result"))
+    w.close()
+    shutil.rmtree(data, ignore_errors=True)
+
+
+asyncio.run(stratum_test())
+print("\n%d/%d passed" % (sum(results), len(results)))
+sys.exit(0 if all(results) else 1)

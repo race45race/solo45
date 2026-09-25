@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+selftest-data/
+*.log
+config.json
+state.json
+anthropic_key

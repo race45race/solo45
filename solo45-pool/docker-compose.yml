@@ -1,0 +1,47 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: solo45-pool_pool_1
+      APP_PORT: 8099
+
+  pool:
+    image: ghcr.io/race45race/solo45:v0.1.0@sha256:IMAGE_DIGEST
+    user: "1000:1000"
+    restart: on-failure
+    stop_grace_period: 10s
+    command: ["python", "/app/pool.py"]
+    ports:
+      - "3334:3333"             # stratum for miners
+      - "127.0.0.1:3381:3380"   # pool API, for health checks on the Umbrel itself
+      - "127.0.0.1:18098:8099"  # dashboard, for health checks on the Umbrel itself
+    volumes:
+      - ${APP_DATA_DIR}/data/pool:/data/pool
+    environment:
+      SOLO45_DATA_DIR: /data/pool
+      BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
+      BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
+      BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}
+
+  dashboard:
+    image: ghcr.io/race45race/solo45:v0.1.0@sha256:IMAGE_DIGEST
+    user: "1000:1000"
+    restart: on-failure
+    stop_grace_period: 10s
+    # Shares the pool's network so the pool's settings API, which only accepts localhost, takes the dashboard's changes.
+    network_mode: "service:pool"
+    depends_on:
+      - pool
+    command: ["sh", "-c", "exec python /app/server.py >> /data/dash/dashboard.log 2>&1"]
+    volumes:
+      - ${APP_DATA_DIR}/data/dash:/data/dash
+      - ${APP_DATA_DIR}/data/pool:/data/pool:ro
+      - ${APP_BITCOIN_DATA_DIR}:/bitcoin:ro
+    environment:
+      SOLO45_DASH_DATA: /data/dash
+      SOLO45_POOL_LOG: /data/pool/pool.log
+      BITCOIN_DATA_DIR: /bitcoin
+      BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
+      BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
+      BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}

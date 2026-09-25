@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Solo Mining</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Solo Mining">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0d1014">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15' fill='%23f7931a'/><text x='16' y='23' font-size='20' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'>₿</text></svg>">
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --line: #e2e5ea;
+  --text: #16191d; --muted: #646b75; --faint: #9aa1ab;
+  --accent: #e8850c; --datum: #2f6fdb; --gobrrr: #e8850c; --solo45: #0b8fa8; --other: #8a63d2;
+  --ok: #1f9d55; --warn: #c27c0e; --bad: #d64545;
+  --ok-bg: #e6f5ec; --warn-bg: #fdf3e1; --bad-bg: #fbe9e9;
+  --shadow: 0 1px 2px rgba(20,24,30,.06), 0 1px 1px rgba(20,24,30,.04);
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1014; --panel: #151a20; --panel-2: #1b2129; --line: #252c35;
+    --text: #e7ebf0; --muted: #98a2ae; --faint: #5f6873;
+    --accent: #f7931a; --datum: #5b9bff; --gobrrr: #f7931a; --solo45: #3cc3dc; --other: #a88bf0;
+    --ok: #3fbf74; --warn: #e3a33a; --bad: #f06a6a;
+    --ok-bg: #12301f; --warn-bg: #33270f; --bad-bg: #3a1717;
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1014; --panel: #151a20; --panel-2: #1b2129; --line: #252c35;
+  --text: #e7ebf0; --muted: #98a2ae; --faint: #5f6873;
+  --accent: #f7931a; --datum: #5b9bff; --gobrrr: #f7931a; --solo45: #3cc3dc; --other: #a88bf0;
+  --ok: #3fbf74; --warn: #e3a33a; --bad: #f06a6a;
+  --ok-bg: #12301f; --warn-bg: #33270f; --bad-bg: #3a1717;
+  --shadow: none;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1280px; margin: 0 auto; padding: 20px 16px 48px; }
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+
+header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 17px; letter-spacing: -.01em; }
+.brand .coin { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
+  display: grid; place-items: center; font-weight: 800; font-size: 15px; }
+.tipbox { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+.tipbox .h { font-size: 15px; font-weight: 600; }
+.live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.live.on i { background: var(--ok); box-shadow: 0 0 0 0 var(--ok); animation: pulse 2s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); }
+  70% { box-shadow: 0 0 0 7px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+.alerts { display: grid; gap: 8px; margin-bottom: 16px; }
+.alert { display: flex; gap: 10px; align-items: center; padding: 10px 14px; border-radius: 10px;
+  background: var(--warn-bg); color: var(--text); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); }
+.alert.bad { background: var(--bad-bg); border-color: color-mix(in srgb, var(--bad) 35%, transparent); }
+.alert.found { background: var(--ok-bg); border-color: var(--ok); font-weight: 600; }
+.alert b { font-weight: 600; }
+
+.kpis { display: grid; grid-template-columns: 1.4fr repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; box-shadow: var(--shadow); min-width: 0; }
+.kpi .label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.kpi .value { font-size: 26px; font-weight: 650; letter-spacing: -.02em; line-height: 1.1; }
+.kpi .value small { font-size: 14px; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.kpi .sub { margin-top: 8px; font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; vertical-align: 0; }
+.split { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin-top: 10px; background: var(--panel-2); }
+.split span { display: block; height: 100%; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1.25fr; gap: 12px; margin-bottom: 12px; }
+h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; display: flex; align-items: baseline; gap: 8px; }
+h2 .muted { font-weight: 400; font-size: 12px; }
+
+.tl { display: grid; gap: 7px; }
+.tl-row { display: grid; grid-template-columns: 120px 1fr 64px; gap: 10px; align-items: center; font-size: 12.5px; }
+.tl-row .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-bar { height: 8px; background: var(--panel-2); border-radius: 4px; position: relative; overflow: hidden; }
+.tl-bar span { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; min-width: 3px; }
+.tl-row .t { text-align: right; }
+.tl-note { font-size: 12px; color: var(--muted); margin-top: 10px; }
+.bigblock { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
+.bigblock .n { font-size: 24px; font-weight: 650; letter-spacing: -.02em; }
+.flash { animation: flash 1.6s ease-out; }
+@keyframes flash { 0% { background: color-mix(in srgb, var(--accent) 22%, var(--panel)); } 100% { background: var(--panel); } }
+
+.chart svg { width: 100%; height: 190px; display: block; }
+.chart .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 6px; flex-wrap: wrap; }
+
+.tablewrap { overflow-x: auto; margin: 0 -16px; padding: 0 16px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 500; font-size: 11.5px; color: var(--muted); padding: 0 10px 8px; white-space: nowrap; border-bottom: 1px solid var(--line); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+tr:last-child td { border-bottom: 0; }
+th.r, td.r { text-align: right; }
+td.first, th.first { padding-left: 0; }
+.mname { font-weight: 600; }
+.mname a { color: inherit; text-decoration: none; }
+.mname a:hover { text-decoration: underline; }
+.msub { font-size: 11.5px; color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+.pill.ok { background: var(--ok-bg); color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.offline { background: var(--bad-bg); color: var(--bad); }
+.pool-tag { font-size: 12px; }
+.hbar { width: 70px; height: 5px; background: var(--panel-2); border-radius: 3px; margin-top: 4px; margin-left: auto; overflow: hidden; }
+.hbar span { display: block; height: 100%; border-radius: 3px; }
+.hot { color: var(--warn); }
+.group-row td { background: var(--panel-2); font-size: 12px; font-weight: 600; padding-top: 6px; padding-bottom: 6px; }
+.group-row td .muted { font-weight: 400; }
+
+.blocks td { font-size: 12.5px; }
+
+button.btn { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
+button.btn.primary { background: var(--solo45); border-color: var(--solo45); color: #fff; font-weight: 600; }
+button.btn:disabled { opacity: .55; cursor: default; }
+button.btn.small { font-size: 12px; padding: 3px 9px; }
+.alert .explain { margin-left: auto; flex: none; }
+.ai-log { display: grid; gap: 12px; max-height: 520px; overflow-y: auto; margin-bottom: 12px; }
+.ai-q { font-weight: 600; }
+.ai-a { background: var(--panel-2); border-radius: 10px; padding: 10px 12px; overflow-wrap: anywhere; }
+.ai-a p { margin: 0 0 8px; } .ai-a p:last-child, .ai-a ul:last-child { margin-bottom: 0; }
+.ai-a ul { margin: 0 0 8px; padding-left: 20px; }
+.ai-a code { font-family: var(--mono); font-size: 12px; }
+.ai-a.err { background: var(--bad-bg); }
+.ai-meta { font-size: 11.5px; color: var(--faint); margin-top: 6px; }
+.proposal { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px;
+  border: 1px dashed var(--solo45); border-radius: 8px; font-size: 13px; }
+.ai-form { display: flex; gap: 8px; align-items: flex-end; }
+.ai-form textarea { flex: 1; min-height: 42px; max-height: 160px; resize: vertical; font: inherit; padding: 8px 10px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.ai-foot { font-size: 12px; color: var(--muted); margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
+.setting-ctl { display: flex; gap: 6px; align-items: center; }
+.setting-ctl select, .setting-ctl input { font: inherit; font-size: 12.5px; padding: 3px 6px; border-radius: 6px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.setting-ctl input { width: 90px; }
+.feed { font-family: var(--mono); font-size: 12.5px; max-height: 360px; overflow-y: auto; display: grid; gap: 1px; }
+.feed .row { display: grid; grid-template-columns: 70px 84px 1fr 16px; gap: 10px; padding: 3px 6px; border-radius: 5px; align-items: center; }
+.feed .row .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed .row.new { animation: flash 1.2s ease-out; }
+.feed .row.bad { color: var(--bad); }
+.feed .row.best { background: color-mix(in srgb, var(--solo45) 16%, transparent); font-weight: 600; }
+.feed .row.block { background: var(--ok-bg); color: var(--ok); font-weight: 700; }
+.spark { display: block; margin: 3px 0 0 auto; }
+.stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }  /* chart + luck card share the right column */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 16px; }
+.stat .label { font-size: 12px; color: var(--muted); }
+.stat .v { font-size: 18px; font-weight: 650; margin-top: 2px; }
+.stat .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.meter { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; margin: 8px 0 4px; }
+.meter span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+@media (max-width: 700px) {
+  .hide-sm { display: none; }
+  .wrap { padding: 12px 10px 32px; }
+  .card { padding: 12px; }
+  .tablewrap { margin: 0 -12px; padding: 0 12px; }
+  td, th { padding-left: 6px; padding-right: 6px; }
+  .ai-form { flex-direction: column; align-items: stretch; }
+  .feed .row { grid-template-columns: 62px 70px 1fr 14px; gap: 6px; }
+}
+#confetti { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 50; }
+#celebrate { position: fixed; inset: 0; z-index: 49; display: none; place-items: center; padding: 16px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent); }
+#celebrate.on { display: grid; }
+#celebrate .box { background: var(--panel); border: 2px solid var(--ok); border-radius: 18px; padding: 28px 32px; max-width: 520px;
+  text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.35); animation: pop .5s cubic-bezier(.2,1.6,.4,1); }
+#celebrate h1 { margin: 0 0 6px; font-size: clamp(26px, 6vw, 44px); letter-spacing: -.02em; color: var(--ok); white-space: nowrap; }
+#celebrate .big { font-size: 20px; font-weight: 650; margin: 10px 0; }
+#celebrate p { color: var(--muted); margin: 6px 0; }
+@keyframes pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.feed-head { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+footer { margin-top: 20px; font-size: 12px; color: var(--faint); display: flex; gap: 16px; flex-wrap: wrap; }
+footer button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 2px 8px; font: inherit; cursor: pointer; }
+
+@media (max-width: 1000px) {
+  .kpis { grid-template-columns: repeat(2, 1fr); }
+  .kpis .kpi:first-child { grid-column: 1 / -1; }
+  .grid2 { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .kpi .value { font-size: 22px; }
+  .tl-row { grid-template-columns: 90px 1fr 56px; }
+  .tipbox { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<canvas id="confetti"></canvas>
+<div id="celebrate" role="dialog" aria-live="assertive">
+  <div class="box">
+    <div style="font-size:44px;line-height:1">🎉</div>
+    <h1>BLOCK FOUND!</h1>
+    <div class="big" id="celWhat"></div>
+    <p id="celDetail"></p>
+    <p class="faint" id="celNote"></p>
+    <button class="btn primary" id="celClose" type="button" style="margin-top:14px">Woohoo! Close</button>
+  </div>
+</div>
+<div class="wrap">
+  <header>
+    <div class="brand"><div class="coin">₿</div>Solo Mining</div>
+    <span class="live" id="live"><i></i><span>connecting…</span></span>
+    <div class="tipbox">
+      <span class="h">Block <span class="num" id="tipH">—</span></span>
+      <span class="muted"><span class="num" id="tipAgo">—</span> ago</span>
+      <span class="muted">Difficulty <span class="num" id="netdiff">—</span></span>
+      <span class="muted">Reward <span class="num" id="reward">—</span></span>
+    </div>
+  </header>
+
+  <div class="alerts" id="alerts"></div>
+
+  <section class="kpis">
+    <div class="card kpi">
+      <div class="label">Fleet hashrate · 1 min</div>
+      <div class="value num" id="kTotal">—</div>
+      <div class="split" id="kSplit"></div>
+      <div class="sub" id="kPools"></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Power · efficiency</div>
+      <div class="value num" id="kPower">—</div>
+      <div class="sub" id="kEff"></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Chance of a block today</div>
+      <div class="value num" id="kOdds">—</div>
+      <div class="sub" id="kOddsYear"></div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Expected time to block</div>
+      <div class="value num" id="kExp">—</div>
+      <div class="sub">average at current hashrate</div>
+    </div>
+    <div class="card kpi">
+      <div class="label">Best share</div>
+      <div class="value num" id="kBest">—</div>
+      <div class="sub" id="kBestSub"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card" id="blockCard">
+      <h2>Latest block <span class="muted">how fast your miners switched</span></h2>
+      <div class="bigblock"><span class="n num" id="bH">—</span><span class="muted" id="bWhen"></span></div>
+      <div class="tl" id="timeline"></div>
+      <div class="tl-note" id="tlNote"></div>
+    </div>
+    <div class="stack">
+      <div class="card chart">
+        <h2>Hashrate <span class="muted" id="chartRange">last 24 hours</span></h2>
+        <svg id="chart" viewBox="0 0 600 190" preserveAspectRatio="none" role="img" aria-label="Hashrate history"></svg>
+        <div class="legend" id="legend"></div>
+      </div>
+      <div class="card">
+        <h2>Luck &amp; work <span class="muted">how much hashing you've done compared with what a block takes</span></h2>
+        <div id="workBox"><span class="faint">Collecting…</span></div>
+        <h2 style="margin-top:16px">Best share history <span class="muted">each day's winner</span></h2>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th class="first">Day</th><th class="r">Best</th><th>Miner</th><th class="r">vs typical</th><th>Luck</th></tr></thead>
+            <tbody id="histRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Miners <span class="muted" id="minerCount"></span></h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th class="first">Miner</th><th>Status</th><th>Pool</th>
+          <th class="r">Hashrate</th><th class="r">Power · cost</th><th class="r hide-sm">J/TH</th>
+          <th class="r" title="Now (chip / VR), and the last 24 hours: chip line solid, VR line faint">Temp · 24h</th><th class="r hide-sm">Best share</th><th class="r hide-sm">Shares</th><th class="r hide-sm" title="The block height this miner is working on (your node's tip + 1)">Mining block</th><th class="r">Uptime</th>
+        </tr></thead>
+        <tbody id="miners"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Solo45 settings</h2>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="refreshS">Typical interval between job updates:</label>
+      <input type="number" id="refreshS" min="1" max="120" step="1" style="width:70px"> <span>seconds</span>
+      <button class="btn small" id="refreshSave" type="button">Save</button>
+      <span class="muted" id="refreshNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes. Datum uses 120.</div>
+    <h2>Share difficulty per miner <span class="muted">only changes how often a miner sends shares, not your chance of a block</span></h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="first">Miner</th><th>Setting</th><th class="r">Difficulty now</th><th class="r">Time per share</th><th class="r">Shares</th><th>Change</th></tr></thead>
+        <tbody id="soloWorkers"></tbody>
+      </table>
+    </div>
+    <div class="ai-foot" id="soloNote"></div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Best share today <span class="muted" id="btNote">typical = the best share you'd expect from the hashes each miner has done today</span></h2>
+    <div class="feed-head" id="btFleet"></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="first">Miner</th><th class="r">Best today</th><th class="r">When</th><th class="r">Typical so far</th><th class="r">vs typical</th><th>Luck</th></tr></thead>
+        <tbody id="btRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Network &amp; node <span class="muted" id="nodeNote"></span></h2>
+    <div class="stats" id="nodeStats"><span class="faint">Asking your node…</span></div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Live shares <span class="muted">every share your miners send to Solo45, newest first · share value / the bar it had to beat</span></h2>
+    <div class="feed-head" id="feedHead"></div>
+    <div class="feed" id="feed"><span class="faint">Waiting for shares…</span></div>
+  </section>
+
+  <section class="card blocks">
+    <h2>Recent blocks <span class="muted">new work = node accepts block → pool sends new work</span></h2>
+    <div class="feed-head" id="switchStats"></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="first">Height</th><th>Seen</th><th class="r">Gap</th><th class="r">Solo45 new work</th><th class="r">Datum new work</th><th class="r">Go Brrr new work</th><th class="r">Miners on new block</th></tr></thead>
+        <tbody id="blocks"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="grid2" style="margin-top:12px">
+    <div class="card" id="aiCard">
+      <h2>Ask the AI <span class="muted">reads live stats and logs, can't change anything by itself</span></h2>
+      <div class="ai-log" id="aiLog"></div>
+      <form class="ai-form" id="aiForm">
+        <textarea id="aiInput" rows="2" placeholder="e.g. Is Solo45 healthy? Why is Bitaxe3 slower than the others?"></textarea>
+        <button class="btn primary" id="aiSend" type="submit">Ask</button>
+      </form>
+      <div class="ai-foot" id="aiFoot"></div>
+    </div>
+    <div class="card">
+      <h2>AI report <span class="muted" id="repWhen"></span></h2>
+      <div class="ai-a" id="repText"><span class="faint">No report yet.</span></div>
+      <div class="ai-foot"><button class="btn small" id="repBtn" type="button">Write report now</button><span id="repNote"></span></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Updates live from your node, Solo45, Go Brrr, and each miner. Only Solo45 share difficulty can be changed here.</span>
+    <span id="updated"></span>
+    <button id="themeBtn" type="button">Theme</button>
+  </footer>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let state = null, lastTipHash = null;
+
+// ---- theme toggle (remembered per browser)
+(function () {
+  let t = null;
+  try { t = localStorage.getItem("theme"); } catch (e) {}
+  if (t) document.documentElement.dataset.theme = t;
+  $("themeBtn").onclick = () => {
+    const dark = document.documentElement.dataset.theme
+      ? document.documentElement.dataset.theme === "dark"
+      : matchMedia("(prefers-color-scheme: dark)").matches;
+    const next = dark ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("theme", next); } catch (e) {}
+    if (state) render(state);
+  };
+})();
+
+// ---- formatting
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function fmtTH(ths) {
+  if (ths == null) return "—";
+  if (ths >= 1000) return (ths / 1000).toFixed(2) + " PH/s";
+  if (ths >= 100) return ths.toFixed(1) + " TH/s";
+  if (ths >= 10) return ths.toFixed(1) + " TH/s";
+  return ths.toFixed(2) + " TH/s";
+}
+function thParts(ths) {
+  if (ths == null) return ["—", ""];
+  if (ths >= 1000) return [(ths / 1000).toFixed(2), "PH/s"];
+  return [ths >= 100 ? ths.toFixed(1) : ths.toFixed(2), "TH/s"];
+}
+function fmtDiff(d) {
+  if (d == null) return "—";
+  const u = [["E",1e18],["P",1e15],["T",1e12],["G",1e9],["M",1e6],["k",1e3]];
+  for (const [s, v] of u) if (d >= v) return (d / v).toFixed(d / v >= 100 ? 0 : d / v >= 10 ? 1 : 2) + " " + s;
+  return Math.round(d).toString();
+}
+function fmtDur(s) {
+  if (s == null || !isFinite(s)) return "—";
+  s = Math.max(0, s);
+  if (s < 60) return Math.floor(s) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  const d = s / 86400;
+  if (d < 365) return Math.floor(d) + "d " + Math.floor((s % 86400) / 3600) + "h";
+  const y = d / 365.25;
+  return (y >= 100 ? Math.round(y).toLocaleString() : y.toFixed(1)) + " years";
+}
+function fmtMs(ms) {
+  if (ms == null) return "—";
+  if (ms < 0) return "−" + Math.round(-ms) + " ms";  // before the dashboard read the node's log line
+  if (ms < 1000) return Math.round(ms) + " ms";
+  return (ms / 1000).toFixed(1) + " s";
+}
+function fmtPct(p) {
+  if (p == null) return "—";
+  const pct = p * 100;
+  if (pct >= 10) return pct.toFixed(1) + "%";
+  if (pct >= 0.1) return pct.toFixed(2) + "%";
+  if (pct >= 0.001) return pct.toFixed(3) + "%";
+  return "1 in " + Math.round(1 / p).toLocaleString();
+}
+const clock = ms => new Date(ms).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
+function poolColor(name) {
+  const cs = getComputedStyle(document.documentElement);
+  if (/datum/i.test(name)) return cs.getPropertyValue("--datum").trim();
+  if (/brrr/i.test(name)) return cs.getPropertyValue("--gobrrr").trim();
+  if (/solo45/i.test(name)) return cs.getPropertyValue("--solo45").trim();
+  return cs.getPropertyValue("--other").trim();
+}
+
+// ---- rendering
+function render(s) {
+  if (!s.history && state && state.history) s.history = state.history;  // chart data arrives every 30 s
+  state = s;
+  const T = s.totals, tip = s.tip;
+
+  $("tipH").textContent = tip ? tip.height.toLocaleString() : "—";
+  $("netdiff").textContent = fmtDiff(T.netdiff);
+  $("reward").textContent = T.reward_sats ? (T.reward_sats / 1e8).toFixed(4) + " BTC" : "—";
+
+  // KPIs
+  const [v, u] = thParts(T.ths);
+  $("kTotal").innerHTML = v + "<small>" + u + "</small>";
+  const pools = Object.entries(T.by_pool).sort((a, b) => b[1] - a[1]);
+  $("kSplit").innerHTML = pools.map(([p, t]) =>
+    `<span style="width:${T.ths ? (t / T.ths * 100) : 0}%;background:${poolColor(p)}" title="${esc(p)}"></span>`).join("");
+  $("kPools").innerHTML = pools.map(([p, t]) =>
+    `<span><i class="dot" style="background:${poolColor(p)}"></i>${esc(p)} <span class="num">${fmtTH(t)}</span></span>`).join("")
+    + `<span>${T.online}/${T.count} online</span>`;
+  $("kPower").innerHTML = T.power ? (T.power >= 1000 ? (T.power / 1000).toFixed(2) + "<small>kW</small>" : Math.round(T.power) + "<small>W</small>") : "—";
+  $("kEff").innerHTML = (T.j_per_th ? `<span class="num">${T.j_per_th.toFixed(1)} J/TH</span>` : "")
+    + (T.cost_day ? `<span class="num">$${T.cost_day.toFixed(2)}/day · $${(T.cost_day * 30.4).toFixed(0)}/mo</span>` : "")
+    + `<span>ASIC-reported, not wall power${T.kwh_price ? " · $" + T.kwh_price + "/kWh" : ""}</span>`;
+  $("kOdds").textContent = T.odds ? fmtPct(T.odds.p_day) : "—";
+  $("kOddsYear").innerHTML = T.odds ? `<span>${fmtPct(T.odds.p_year)} over a year</span>` : "";
+  $("kExp").textContent = T.odds ? fmtDur(T.odds.expected_s) : "—";
+  if (T.best) {
+    $("kBest").textContent = fmtDiff(T.best.diff);
+    $("kBestSub").innerHTML = `<span>${esc(T.best.name)}</span>` + (T.netdiff ? `<span>${fmtPct(T.best.diff / T.netdiff)} of a block</span>` : "");
+  }
+
+  renderAlerts(s);
+  renderBlock(s);
+  renderMiners(s);
+  renderBlocks(s);
+  renderSolo(s);
+  renderBestToday(s);
+  renderWork(s);
+  renderNode(s);
+  renderChart(s);
+  $("updated").textContent = "Updated " + clock(s.now_ms);
+}
+
+// ---- block celebration: confetti + card + fanfare, once per block (remembered in this browser)
+let celebrated = new Set();
+try { celebrated = new Set(JSON.parse(localStorage.getItem("celebrated") || "[]")); } catch (e) {}
+function remember(key) {
+  celebrated.add(key);
+  try { localStorage.setItem("celebrated", JSON.stringify([...celebrated].slice(-50))); } catch (e) {}
+}
+function confetti(seconds = 8) {
+  const c = $("confetti"), ctx = c.getContext("2d");
+  const W = c.width = innerWidth * devicePixelRatio, H = c.height = innerHeight * devicePixelRatio;
+  const colors = ["#f7931a", "#3cc3dc", "#3fbf74", "#5b9bff", "#f06a6a", "#e3a33a", "#ffffff"];
+  const bits = Array.from({length: 320}, () => ({  // start spread over the top half so the burst is visible at once
+    x: Math.random() * W, y: (Math.random() * 0.6 - 0.15) * H, w: 7 + Math.random() * 9, h: 9 + Math.random() * 12,
+    vx: (Math.random() - .5) * 3, vy: 1.5 + Math.random() * 3.5, r: Math.random() * 6, vr: (Math.random() - .5) * .3,
+    c: colors[Math.floor(Math.random() * colors.length)]}));
+  const end = performance.now() + seconds * 1000;
+  (function frame(now) {
+    ctx.clearRect(0, 0, W, H);
+    for (const b of bits) {
+      b.x += b.vx * devicePixelRatio; b.y += b.vy * devicePixelRatio; b.vy += 0.03; b.r += b.vr;
+      if (b.y > H && now < end - 1500) { b.y = -20; b.x = Math.random() * W; b.vy = 2 + Math.random() * 3; }
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.r); ctx.fillStyle = b.c;
+      ctx.fillRect(-b.w / 2, -b.h / 2, b.w, b.h); ctx.restore();
+    }
+    if (now < end) requestAnimationFrame(frame); else ctx.clearRect(0, 0, W, H);
+  })(performance.now());
+}
+function fanfare() {
+  try {  // browsers only allow sound after you've clicked on the page once
+    const a = new (window.AudioContext || window.webkitAudioContext)();
+    [523, 659, 784, 1047, 784, 1047].forEach((f, i) => {
+      const o = a.createOscillator(), g = a.createGain(), t = a.currentTime + i * 0.16;
+      o.type = "triangle"; o.frequency.value = f; o.connect(g); g.connect(a.destination);
+      g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + (i === 5 ? 0.9 : 0.15));
+      o.start(t); o.stop(t + 1);
+    });
+  } catch (e) {}
+}
+function celebrate(what, detail, note) {
+  $("celWhat").textContent = what; $("celDetail").textContent = detail || ""; $("celNote").textContent = note || "";
+  $("celebrate").classList.add("on"); confetti(); fanfare();
+}
+$("celClose").onclick = () => $("celebrate").classList.remove("on");
+function checkCelebrations(s) {
+  const reward = s.totals.reward_sats ? (s.totals.reward_sats / 1e8).toFixed(4) + " BTC" : "";
+  for (const f of s.found || []) {
+    const key = "found:" + f.t + ":" + f.msg;
+    if (celebrated.has(key)) continue;
+    remember(key);
+    if (Date.now() - f.t > 24 * 3600 * 1000) continue;  // too old to celebrate now
+    celebrate(f.msg.replace(/^Solo45: /, ""), reward ? "Reward about " + reward : "", "Found " + new Date(f.t).toLocaleString());
+  }
+  for (const m of s.miners) {
+    if (!m.block_found) continue;
+    const key = "miner:" + m.ip;
+    if (celebrated.has(key)) continue;
+    remember(key);
+    celebrate(m.name + " found a block!", reward ? "Reward about " + reward : "", "Reported by the miner itself");
+  }
+}
+if (location.search.includes("celebrate")) setTimeout(() => celebrate("Block 968,600 by Bitaxe9 (TEST)", "Reward about 3.1300 BTC", "This is a test: remove ?celebrate from the address to go back"), 800);
+
+function renderAlerts(s) {
+  checkCelebrations(s);
+  const out = [];
+  for (const f of s.found || []) out.push(`<div class="alert found">🎉 Block found! <span class="num">${esc(f.msg)}</span></div>`);
+  const so = s.solo45 || {};
+  const onSolo = s.miners.some(m => m.pool === "Solo45");
+  const explain = text => `<button class="btn small explain" type="button" data-alert="${esc(text)}">Explain</button>`;
+  if (!so.up && (onSolo || so.checked)) out.push(`<div class="alert bad"><span><b>Solo45 pool</b> is not responding <span class="muted">(${esc(so.error || "no reply")})</span></span>${explain("Solo45 pool is not responding: " + (so.error || "no reply"))}</div>`);
+  else if (so.up && so.proposal && so.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45:</b> your node rejected the pool's test block (${esc(so.proposal.result)}). Found blocks might be invalid, so move miners to Datum until this is fixed.</span>${explain("Solo45 block proposal check failed: " + so.proposal.result)}</div>`);
+  for (const m of s.miners) {
+    if (m.block_found) out.push(`<div class="alert found">🎉 ${esc(m.name)} reports a found block!</div>`);
+    if (m.status === "offline") out.push(`<div class="alert bad"><span><b>${esc(m.name)}</b> is not responding <span class="muted">(${esc(m.ip)})</span></span>${explain(m.name + " (" + m.ip + ") is not responding")}</div>`);
+    else if (m.status === "warn") out.push(`<div class="alert"><span><b>${esc(m.name)}</b> ${esc(m.status_text)}</span>${explain(m.name + " (" + m.ip + "): " + m.status_text)}</div>`);
+  }
+  $("alerts").innerHTML = out.join("");
+}
+
+function renderBlock(s) {
+  const tip = s.tip;
+  if (!tip) return;
+  $("bH").textContent = tip.height.toLocaleString();
+  $("bWhen").textContent = "accepted by your node at " + clock(tip.seen_ms);
+  const rows = [];
+  const bitaxes = s.miners.filter(m => m.status !== "offline");
+  const times = [];
+  if (tip.gobrrr_ms != null) times.push(tip.gobrrr_ms);
+  if (tip.solo45_ms != null) times.push(tip.solo45_ms);
+  if (tip.datum_ms != null) times.push(tip.datum_ms);
+  for (const m of bitaxes) if (tip.miners[m.name] != null) times.push(tip.miners[m.name]);
+  const max = Math.max(1000, ...times);
+  const bar = (ms, color) => `<div class="tl-bar">${ms == null ? "" : `<span style="width:${Math.max(0.6, Math.max(ms, 0) / max * 100)}%;background:${color}"></span>`}</div>`;
+  const ck = poolColor("Go Brrr");
+  rows.push(`<div class="tl-row"><span class="name">Your node</span>${bar(0, "var(--text)")}<span class="t num">0 ms</span></div>`);
+  if ((s.solo45 || {}).up || tip.solo45_ms != null)
+    rows.push(`<div class="tl-row" title="${tip.solo45_ms < 0 ? "Sent before the dashboard read the node's log line. " : ""}${tip.solo45_build_ms != null ? `Solo45 built and sent the new work ${tip.solo45_build_ms} ms after it spotted the block.` : ""}"><span class="name">Solo45 new work</span>${bar(tip.solo45_ms, poolColor("Solo45"))}<span class="t num">${fmtMs(tip.solo45_ms)}${tip.solo45_build_ms != null ? `<span class="faint hide-sm"> · built ${tip.solo45_build_ms} ms</span>` : ""}</span></div>`);
+  if (tip.live) {
+    const waitingD = tip.datum_ms == null && (s.now_ms - tip.seen_ms) < 20000;
+    rows.push(`<div class="tl-row" title="When the first miner on Datum received the new block's work"><span class="name">Datum Gateway</span>${bar(tip.datum_ms, poolColor("Datum"))}<span class="t num ${tip.datum_ms == null ? "faint" : ""}">${tip.datum_ms != null ? fmtMs(tip.datum_ms) : waitingD ? "…" : "—"}</span></div>`);
+  }
+  rows.push(`<div class="tl-row"><span class="name">Go Brrr new work</span>${bar(tip.gobrrr_ms, ck)}<span class="t num">${tip.live ? fmtMs(tip.gobrrr_ms) : (tip.gobrrr_ms != null && tip.gobrrr_ms < 1000 ? "&lt;1 s" : fmtMs(tip.gobrrr_ms))}</span></div>`);
+  const sorted = bitaxes.slice().sort((a, b) => (tip.miners[a.name] ?? 1e12) - (tip.miners[b.name] ?? 1e12));
+  for (const m of sorted) {
+    const ms = tip.miners[m.name];
+    const waiting = ms == null && tip.live && (s.now_ms - tip.seen_ms) < 8000;
+    rows.push(`<div class="tl-row"><span class="name">${esc(m.name)}</span>${bar(ms, poolColor(m.pool))}<span class="t num ${ms == null ? "faint" : ""}">${ms != null ? fmtMs(ms) : waiting ? "…" : "—"}</span></div>`);
+  }
+  $("timeline").innerHTML = rows.join("");
+  $("tlNote").textContent = tip.live
+    ? "Bitaxe times include up to ~0.5 s of polling delay; S21 and S19K Pro times up to ~0.2 s (taken from when Datum sends them a new job). Datum Gateway = the first miner on Datum to get the new block's work. Times count from when the dashboard read the block in the node's log; a negative time means that pool was even quicker."
+    : "This block arrived before the dashboard started, so only Go Brrr's timing (to the second) is known. The next block will be timed live, including Solo45.";
+  if (tip.hash !== lastTipHash) {
+    if (lastTipHash) { const c = $("blockCard"); c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
+    lastTipHash = tip.hash;
+  }
+}
+
+function sparkline(trend) {
+  // tiny 24 h chart: chip temperature (solid) and VR temperature (faint)
+  if (!trend || trend.length < 3) return "";
+  const vals = trend.flat().filter(v => v != null && v > 0);
+  if (!vals.length) return "";
+  const lo = Math.min(...vals) - 2, hi = Math.max(...vals) + 2, W = 72, H = 18;
+  const line = i => trend.map((p, x) => p[i] > 0 ? `${(x / (trend.length - 1) * W).toFixed(1)},${(H - (p[i] - lo) / (hi - lo) * H).toFixed(1)}` : null).filter(Boolean).join(" ");
+  return `<svg class="spark" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-hidden="true"><polyline points="${line(1)}" fill="none" stroke="var(--faint)" stroke-width="1"/><polyline points="${line(0)}" fill="none" stroke="var(--accent)" stroke-width="1.5"/></svg>`;
+}
+
+function renderMiners(s) {
+  const tip = s.tip;
+  const groups = {};
+  for (const m of s.miners) (groups[m.status === "offline" ? "Offline" : m.pool] ||= []).push(m);
+  const order = Object.keys(groups).sort((a, b) => (a === "Offline") - (b === "Offline") ||
+    groups[b].reduce((x, m) => x + (m.ths || 0), 0) - groups[a].reduce((x, m) => x + (m.ths || 0), 0));
+  const rows = [];
+  for (const g of order) {
+    const list = groups[g].sort((a, b) => (b.ths || 0) - (a.ths || 0) || a.name.localeCompare(b.name, undefined, {numeric: true}));
+    const sum = list.reduce((x, m) => x + (m.status !== "offline" ? (m.ths || 0) : 0), 0);
+    rows.push(`<tr class="group-row"><td class="first" colspan="11"><i class="dot" style="background:${g === "Offline" ? "var(--bad)" : poolColor(g)}"></i>${esc(g)} <span class="muted">· ${list.length} miner${list.length > 1 ? "s" : ""}${g !== "Offline" ? " · " + fmtTH(sum) : ""}</span></td></tr>`);
+    for (const m of list) {
+      const off = m.status === "offline";
+      const pct = m.expected_ths ? Math.min(100, (m.ths / m.expected_ths) * 100) : null;
+      const jth = m.power && m.ths ? (m.power / m.ths).toFixed(1) : "—";
+      const hot = (m.kind === "bitaxe" && m.temp >= 65) || (m.kind === "braiins" && m.temp >= 80);
+      const temp = m.temp != null ? `<span class="${hot ? "hot" : ""}">${Math.round(m.temp)}°</span>` + (m.temp2 ? `<span class="faint"> / ${Math.round(m.temp2)}°</span>` : "") : "—";
+      const best = m.best_session != null
+        ? `${fmtDiff(m.best_session)} <span class="faint">/ ${fmtDiff(m.best)}</span>`
+        : fmtDiff(m.best);
+      const blk = m.height ? (tip && m.height > tip.height ? `<span style="color:var(--ok)">✓</span> <span class="num">${m.height}</span>` : `<span class="hot num">${m.height}</span>`) : `<span class="faint">—</span>`;
+      const rej = m.rejected ? `<span class="faint"> / ${m.rejected}</span>` : "";
+      const ref = m.ths_long || m.ths;  // the Hexes' older firmware has no 10-minute average
+      const seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
+      const seenLine = seen != null && !off ? `<div class="msub" title="Hashrate Solo45 measured from this miner's shares over the last hour, vs what the miner reports. Short-term it swings with share luck; far below 100% for hours means lost work.">pool sees ${Math.round(seen * 100)}%</div>` : "";
+      const up24 = m.uptime_24h != null ? `<div class="msub" title="Share of 5-minute checks in the last 24 h when this miner answered">${(m.uptime_24h * 100).toFixed(m.uptime_24h >= 0.999 ? 0 : 1)}% online 24h</div>` : "";
+      rows.push(`<tr style="${off ? "opacity:.55" : ""}">
+        <td class="first"><div class="mname"><a href="http://${esc(m.ip)}" target="_blank" rel="noopener">${esc(m.name)}</a></div><div class="msub">${esc(m.model)} · ${esc(m.ip)}</div></td>
+        <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
+        <td class="pool-tag">${esc(m.pool)}${m.on_fallback ? ' <span class="hot">(fallback)</span>' : ""}</td>
+        <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}${seenLine}</td>
+        <td class="r num">${m.power ? Math.round(m.power) + " W" : "—"}${m.cost_day ? `<div class="msub">$${m.cost_day.toFixed(2)}/day</div>` : ""}</td>
+        <td class="r num hide-sm">${off ? "—" : jth}</td>
+        <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
+        <td class="r num hide-sm" title="${m.best_session != null ? "since restart / all-time" : "since restart"}">${best}</td>
+        <td class="r num hide-sm">${m.accepted != null ? Number(m.accepted).toLocaleString() : "—"}${rej}</td>
+        <td class="r hide-sm">${blk}</td>
+        <td class="r num">${m.uptime != null ? fmtDur(m.uptime) : "—"}${up24}</td>
+      </tr>`);
+    }
+  }
+  $("miners").innerHTML = rows.join("");
+  $("minerCount").textContent = `${s.totals.online} of ${s.totals.count} online`;
+}
+
+// ---- Solo45 share difficulty (the table is rebuilt only when miners or settings change,
+// so the inputs aren't wiped while you type; the numbers update in place)
+let soloSig = "";
+const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
+function renderSolo(s) {
+  const so = s.solo45 || {};
+  if (so.template_refresh_s != null && document.activeElement !== $("refreshS")) {
+    $("refreshS").value = so.template_refresh_s;
+    $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
+  }
+  const ws = (so.workers || []).slice().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  const sig = ws.map(w => w.name + JSON.stringify(w.override || {})).join("|");
+  const editing = document.activeElement && $("soloWorkers").contains(document.activeElement);
+  if (sig !== soloSig && !editing) {
+    soloSig = sig;
+    $("soloWorkers").innerHTML = ws.length ? ws.map((w, i) => `<tr>
+      <td class="first"><div class="mname">${esc(w.name)}</div><div class="msub">${esc(w.ip)}</div></td>
+      <td>${esc(settingText(w.override))}</td>
+      <td class="r num" id="sd${i}"></td><td class="r num" id="st${i}"></td><td class="r num" id="ss${i}"></td>
+      <td><div class="setting-ctl" data-name="${esc(w.name)}">
+        <select><option value="auto">Automatic</option><option value="share_seconds">Seconds per share</option><option value="diff">Fixed difficulty</option></select>
+        <input type="number" min="0" step="any" placeholder="value" style="display:none">
+        <button class="btn small" type="button">Save</button>
+      </div></td></tr>`).join("")
+      : `<tr><td class="first faint" colspan="6">No miners on Solo45 right now.</td></tr>`;
+  }
+  ws.forEach((w, i) => {
+    const el = id => $(id + i);
+    if (!el("sd")) return;
+    el("sd").textContent = fmtDiff(w.diff);
+    el("st").textContent = w.hashrate_5m ? fmtDur(w.diff * 2 ** 32 / w.hashrate_5m) : "—";
+    const rej = Object.values(w.rejected || {}).reduce((a, b) => a + b, 0);
+    el("ss").innerHTML = Number(w.accepted).toLocaleString() + (rej ? `<span class="faint"> / ${rej} rejected</span>` : "");
+  });
+}
+
+async function saveSetting(name, body, note) {
+  note.textContent = "Saving…";
+  try {
+    const r = await fetch("/api/solo45/worker", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({name}, body))});
+    const j = await r.json();
+    note.textContent = r.ok ? `Saved: ${name} is now on “${settingText(j.override)}”.` : `Not saved: ${j.error || r.status}`;
+    return r.ok;
+  } catch (e) {
+    note.textContent = "Not saved: " + e.message;
+    return false;
+  }
+}
+
+$("refreshSave").addEventListener("click", async () => {
+  const v = parseFloat($("refreshS").value);
+  if (!(v >= 1 && v <= 120)) { $("refreshNote").textContent = "Pick a number from 1 to 120."; return; }
+  $("refreshSave").disabled = true;
+  $("refreshNote").textContent = "Saving…";
+  try {
+    const r = await fetch("/api/solo45/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({template_refresh_s: v})});
+    const j = await r.json();
+    $("refreshNote").textContent = r.ok ? `Saved: every ${j.template_refresh_s} s` : `Not saved: ${j.error || r.status}`;
+  } catch (e) {
+    $("refreshNote").textContent = "Not saved: " + e.message;
+  }
+  $("refreshSave").disabled = false;
+  $("refreshS").blur();
+});
+
+$("soloWorkers").addEventListener("change", e => {
+  if (e.target.tagName !== "SELECT") return;
+  const input = e.target.parentElement.querySelector("input");
+  input.style.display = e.target.value === "auto" ? "none" : "";
+  input.placeholder = e.target.value === "diff" ? "e.g. 2000" : "e.g. 10";
+});
+$("soloWorkers").addEventListener("click", async e => {
+  if (e.target.tagName !== "BUTTON") return;
+  const ctl = e.target.closest(".setting-ctl");
+  const mode = ctl.querySelector("select").value, val = parseFloat(ctl.querySelector("input").value);
+  if (mode !== "auto" && !(val > 0)) { $("soloNote").textContent = "Enter a number first."; return; }
+  e.target.disabled = true;
+  await saveSetting(ctl.dataset.name, mode === "auto" ? {} : {[mode]: val}, $("soloNote"));
+  e.target.disabled = false;
+});
+
+// ---- best share today
+const luckStyle = {"very lucky": "background:var(--ok-bg);color:var(--ok)", "lucky": "background:color-mix(in srgb, var(--solo45) 18%, transparent);color:var(--solo45)",
+                   "normal": "background:var(--panel-2);color:var(--muted)", "quiet": "background:var(--panel-2);color:var(--faint)"};
+const luckPill = tag => tag ? `<span class="pill" style="${luckStyle[tag]}">${tag === "very lucky" ? "🍀 very lucky" : tag === "lucky" ? "✨ lucky" : tag}</span>` : `<span class="faint">—</span>`;
+const fmtRatio = r => r == null ? "—" : r >= 10 ? Math.round(r) + "×" : r >= 1 ? r.toFixed(1) + "×" : r.toFixed(2) + "×";
+function renderBestToday(s) {
+  const bt = s.best_today;
+  if (!bt || !bt.miners || !bt.miners.length) { $("btRows").innerHTML = `<tr><td class="first faint" colspan="6">Collecting today's shares…</td></tr>`; return; }
+  const f = bt.fleet, nd = s.totals.netdiff;
+  $("btFleet").innerHTML = `<span>Best on Solo45 today <b class="num">${fmtDiff(f.best)}</b>${f.name ? ` (${esc(f.name)})` : ""}</span>`
+    + `<span>typical so far <b class="num">${fmtDiff(f.typical)}</b></span><span>${luckPill(f.tag)}</span>`
+    + (nd && f.best ? `<span>${f.best / nd >= 0.001 ? fmtPct(f.best / nd) : "1/" + fmtDiff(nd / f.best)} of a block</span>` : "")
+    + (bt.since ? `<span class="faint">counting since ${new Date(bt.since * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}${bt.miners.some(m => !m.exact) ? " · *Datum miners: only new records since their restart" : ""}</span>` : "");
+  $("btRows").innerHTML = bt.miners.map(m => `<tr>
+      <td class="first"><div class="mname">${esc(m.name)}</div></td>
+      <td class="r num">${m.best ? fmtDiff(m.best) : m.exact ? '<span class="faint">none yet</span>' : '<span class="faint" title="Miners on Datum only report their best since restart, so a new best shows here only when it beats that record. Exact once it moves to Solo45.">not tracked on Datum*</span>'}</td>
+      <td class="r num">${m.at ? clock(m.at * 1000) : "—"}</td>
+      <td class="r num">${fmtDiff(m.typical)}</td>
+      <td class="r num">${fmtRatio(m.ratio)}</td>
+      <td>${luckPill(m.tag)}</td></tr>`).join("");
+}
+
+// ---- luck & work, best share history
+function renderWork(s) {
+  const w = s.work;
+  if (w) {
+    const now = Date.now() / 1000, d = new Date();
+    const monthEnd = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime() / 1000;
+    const rate = w.since && now > w.since + 600 ? w.blocks / (now - w.since) : null;
+    const projected = rate != null ? w.blocks + rate * (monthEnd - now) : null;
+    const pct = v => { const p = v * 100; return (p >= 10 ? p.toFixed(0) : p >= 0.1 ? p.toFixed(2) : p > 0 ? p.toPrecision(2) : "0") + "%"; };
+    const since = w.since ? new Date(w.since * 1000) : null;
+    const partial = since && (since.getDate() > 1 || since.getHours() > 1);
+    $("workBox").innerHTML = `<div class="stat"><div class="label">Work done this month, as a share of one block</div>
+        <div class="v num">${pct(w.blocks)}</div>
+        <div class="meter"><span style="width:${Math.min(100, w.blocks * 100)}%"></span></div>
+        <div class="s">${projected != null ? `on pace for about <b>${pct(projected)}</b> by the end of the month` : "…"}${partial ? ` · counting since ${since.toLocaleDateString([], {month: "short", day: "numeric"})}` : ""}</div>
+        <div class="s">A solo miner's chance of at least one block this month is about ${pct(1 - Math.exp(-(projected || w.blocks)))}. The work doesn't carry over: every hash is a fresh try.</div>
+        ${w.prev ? `<div class="s">Last month (${esc(w.prev.month)}): ${pct(w.prev.blocks)} of a block</div>` : ""}</div>`;
+  }
+  const hist = (s.best_history || []).slice().reverse();
+  const bt = s.best_today && s.best_today.fleet;
+  const rows = [];
+  if (bt && bt.best) rows.push({date: "Today (so far)", best: bt.best, name: bt.name, typical: bt.typical, tag: bt.tag});
+  for (const h of hist) rows.push(h);
+  $("histRows").innerHTML = rows.length ? rows.map(h => `<tr>
+      <td class="first">${esc(h.date)}</td><td class="r num">${fmtDiff(h.best)}</td><td>${esc(h.name || "—")}</td>
+      <td class="r num">${h.typical ? fmtRatio(h.best / h.typical) : "—"}</td><td>${luckPill(h.tag)}</td></tr>`).join("")
+    : `<tr><td class="first faint" colspan="5">The first day is saved at midnight.</td></tr>`;
+}
+
+// ---- network & node
+function renderNode(s) {
+  const n = s.node || {}, so = s.solo45 || {};
+  if (!n.ok) { $("nodeStats").innerHTML = `<span class="faint">${n.error ? "Can't reach your node: " + esc(n.error) : "Asking your node…"}</span>`; return; }
+  const days = sec => sec >= 2 * 86400 ? (sec / 86400).toFixed(sec >= 30 * 86400 ? 0 : 1) + " days" : fmtDur(sec);
+  const stat = (label, v, sub) => `<div class="stat"><div class="label">${label}</div><div class="v num">${v}</div><div class="s">${sub || ""}</div></div>`;
+  const chg = n.adj_change_pct;
+  $("nodeStats").innerHTML =
+      stat("Your node", n.synced ? `<span style="color:var(--ok)">✓ synced</span>` : `<span class="hot">syncing</span>`,
+           `block ${n.height.toLocaleString()} · ${n.peers_in} in / ${n.peers_out} out peers`)
+    + stat("Next difficulty change", chg == null ? "—" : `<span style="color:${chg < 0 ? "var(--ok)" : "var(--warn)"}">${chg > 0 ? "+" : ""}${chg.toFixed(1)}%</span>`,
+           `in ${n.adj_blocks_left.toLocaleString()} blocks (~${days(n.adj_eta_s)}) · blocks averaging ${n.adj_avg_min.toFixed(2)} min${chg < 0 ? " · easier for you" : ""}`)
+    + stat("Next block (Solo45 template)", so.reward ? (so.reward / 1e8).toFixed(4) + " BTC" : "—",
+           so.reward ? `${n.subsidy_now} BTC subsidy + ${(so.fees / 1e8).toFixed(4)} fees · ${so.txs} transactions` : "")
+    + stat("Mempool", `${n.mempool_tx.toLocaleString()} tx`,
+           `${n.mempool_mb.toFixed(1)} MB${n.mempool_fees != null ? " · " + n.mempool_fees.toFixed(4) + " BTC in fees" : ""}`)
+    + stat("Halving", `${n.halving_blocks_left.toLocaleString()} blocks`,
+           `at block ${n.halving_height.toLocaleString()}, ~${days(n.halving_eta_s)} · subsidy ${n.subsidy_now} → ${n.subsidy_next} BTC`)
+    + stat("Blockchain on disk", n.size_gb ? n.size_gb.toFixed(0) + " GB" : "—", esc(n.version || ""));
+  $("nodeNote").textContent = "checked " + clock(n.checked * 1000);
+}
+
+// ---- live share feed (from Solo45, newest on top, at most 80 rows on the page)
+const feedRows = [];      // newest first
+const feedSeen = new Set();  // "seq:time" keys, so the first load and the live stream can't double up
+let feedBest = 0, acceptedTimes = [];
+function addShares(list, live) {
+  let changed = false;
+  for (const s of list) {
+    const key = s.seq + ":" + s.t;
+    if (feedSeen.has(key)) continue;
+    feedSeen.add(key);
+    const best = !s.rejected && s.share > feedBest && feedRows.length > 0;
+    if (!s.rejected) { acceptedTimes.push(s.t); if (s.share > feedBest) feedBest = s.share; }
+    feedRows.unshift(Object.assign({}, s, {best, fresh: live}));
+    changed = true;
+  }
+  feedRows.length = Math.min(feedRows.length, 80);
+  if (feedSeen.size > 2000) { feedSeen.clear(); feedRows.forEach(s => feedSeen.add(s.seq + ":" + s.t)); }
+  if (changed) renderFeed();
+}
+function renderFeed() {
+  const now = Date.now() / 1000;
+  acceptedTimes = acceptedTimes.filter(t => now - t < 60);
+  const rej = feedRows.filter(s => s.rejected).length;
+  $("feedHead").innerHTML = `<span><b class="num">${acceptedTimes.length}</b> shares in the last minute</span>`
+    + `<span>best since this page opened <b class="num">${fmtDiff(feedBest)}</b></span>`
+    + (rej ? `<span style="color:var(--bad)">${rej} rejected in this list</span>` : `<span>0 rejected</span>`);
+  $("feed").innerHTML = feedRows.map(s => {
+    const cls = s.block ? "block" : s.rejected ? "bad" : s.best ? "best" : "";
+    const value = s.block ? `BLOCK! ${fmtDiff(s.share)}`
+      : s.rejected ? `rejected: ${s.rejected}`
+      : `${fmtDiff(s.share)} <span class="faint">/ ${fmtDiff(s.diff)}</span>${s.best ? " ← new best" : ""}`;
+    return `<div class="row ${cls} ${s.fresh ? "new" : ""}"><span class="faint">${new Date(s.t * 1000).toLocaleTimeString([], {hour12: false})}</span>`
+      + `<span>${esc(s.worker)}</span><span class="val">${value}</span><span>${s.block ? "🎉" : s.rejected ? "✗" : "✓"}</span></div>`;
+  }).join("") || `<span class="faint">Waiting for shares…</span>`;
+  feedRows.forEach(s => { s.fresh = false; });
+}
+
+// ---- AI assistant
+const aiTurns = [];   // {q, a} pairs, sent back as conversation history
+function md(text) {
+  // just enough markdown for short answers: paragraphs, bullet lists, **bold**, `code`
+  const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
+  const out = [];
+  let list = null;
+  for (const line of String(text).split("\n")) {
+    const m = line.match(/^\s*[-*•]\s+(.*)$/) || line.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (m) { (list ||= []).push(`<li>${inline(m[1])}</li>`); continue; }
+    if (list) { out.push(`<ul>${list.join("")}</ul>`); list = null; }
+    if (line.trim()) out.push(`<p>${inline(line.replace(/^#+\s*/, ""))}</p>`);
+  }
+  if (list) out.push(`<ul>${list.join("")}</ul>`);
+  return out.join("");
+}
+const money = v => "$" + (v < 0.1 ? v.toFixed(3) : v.toFixed(2));
+
+async function aiStatus() {
+  let st;
+  try { st = await (await fetch("/api/ai/status")).json(); } catch (e) { return; }
+  if (st.unavailable) {
+    $("aiFoot").textContent = "The AI library isn't installed, so the assistant is off.";
+  } else if (!st.enabled) {
+    $("aiFoot").innerHTML = "Add your Anthropic API key to turn this on: put it in <code>~/solo-dash/anthropic_key</code> on the Umbrel.";
+  } else {
+    $("aiFoot").innerHTML = `<span>${esc(st.model)}</span><span>This week <span class="num">${money(st.spent_week)}</span> of $${st.weekly_cap}</span><span>This month <span class="num">${money(st.spent_month)}</span> of $${st.monthly_cap}</span><span>about 10–20¢ per question</span>`;
+  }
+  $("aiSend").disabled = $("repBtn").disabled = !st.enabled;
+  if (st.report) {
+    $("repText").innerHTML = md(st.report.text);
+    $("repWhen").textContent = new Date(st.report.at * 1000).toLocaleString([], {weekday: "short", hour: "2-digit", minute: "2-digit"});
+    $("repNote").textContent = `cost ${money(st.report.cost)}`;
+  } else if (st.enabled) {
+    const every = st.report_every_days > 1 ? `every ${st.report_every_days} days` : "every day";
+    $("repNote").textContent = `A new report is written ${every} after ${st.report_hour}:00.`;
+  }
+}
+
+function proposalHtml(p, id) {
+  const what = p.diff != null ? `fixed difficulty ${fmtDiff(p.diff)}` : p.share_seconds != null ? `1 share every ${p.share_seconds} s` : "automatic difficulty";
+  return `<div class="proposal" id="${id}"><span>Suggestion: set <b>${esc(p.worker)}</b> to ${what}. <span class="muted">${esc(p.reason)}</span></span>
+    <button class="btn small primary" type="button" data-apply="${esc(JSON.stringify(p))}">Apply</button></div>`;
+}
+
+async function ask(question) {
+  question = question.trim();
+  if (!question) return;
+  const box = document.createElement("div");
+  box.innerHTML = `<div class="ai-q">${esc(question)}</div><div class="ai-a"><span class="faint">Thinking… (can take up to a minute)</span></div>`;
+  $("aiLog").appendChild(box);
+  $("aiLog").scrollTop = $("aiLog").scrollHeight;
+  $("aiSend").disabled = true;
+  let res;
+  try {
+    const r = await fetch("/api/ai/ask", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({question, history: aiTurns})});
+    res = await r.json();
+  } catch (e) {
+    res = {error: "Couldn't reach the dashboard: " + e.message};
+  }
+  const a = box.querySelector(".ai-a");
+  if (res.error) {
+    a.classList.add("err");
+    a.innerHTML = esc(res.error) + (res.cost ? `<div class="ai-meta">cost ${money(res.cost)}</div>` : "");
+  } else {
+    aiTurns.push({q: question, a: res.answer});
+    a.innerHTML = md(res.answer)
+      + (res.proposals || []).map((p, i) => proposalHtml(p, "prop" + aiTurns.length + "_" + i)).join("")
+      + `<div class="ai-meta">${esc(res.model)} · cost ${money(res.cost)}</div>`;
+  }
+  $("aiLog").scrollTop = $("aiLog").scrollHeight;
+  $("aiSend").disabled = false;
+  aiStatus();
+}
+
+$("aiForm").addEventListener("submit", e => { e.preventDefault(); const q = $("aiInput").value; $("aiInput").value = ""; ask(q); });
+$("aiInput").addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("aiForm").requestSubmit(); } });
+$("alerts").addEventListener("click", e => {
+  const b = e.target.closest(".explain");
+  if (!b) return;
+  $("aiCard").scrollIntoView({behavior: "smooth", block: "center"});
+  ask(`Explain this dashboard alert in plain English: what it means, the likely cause, and what I should do. Check the logs or the miner if that helps.\n\nAlert: ${b.dataset.alert}`);
+});
+$("aiLog").addEventListener("click", async e => {
+  const b = e.target.closest("[data-apply]");
+  if (!b) return;
+  const p = JSON.parse(b.dataset.apply);
+  const body = p.diff != null ? {diff: p.diff} : p.share_seconds != null ? {share_seconds: p.share_seconds} : {};
+  const note = document.createElement("span");
+  b.replaceWith(note);
+  await saveSetting(p.worker, body, note);
+});
+$("repBtn").addEventListener("click", async () => {
+  if (!confirm("Write a new report now? It uses about 15¢ of your AI budget.")) return;
+  $("repBtn").disabled = true;
+  $("repNote").textContent = "Writing… (up to a minute)";
+  try {
+    const res = await (await fetch("/api/ai/report", {method: "POST"})).json();
+    if (res.error) $("repNote").textContent = res.error;
+  } catch (e) {
+    $("repNote").textContent = e.message;
+  }
+  aiStatus();
+});
+aiStatus();
+setInterval(aiStatus, 60000);
+
+function renderBlocks(s) {
+  const sw = s.switch;
+  if (sw && sw.blocks) {
+    const part = (name, v) => v == null ? "" : `<span>${name} <b class="num">${fmtMs(v)}</b></span>`;
+    $("switchStats").innerHTML = `<span>Median new-work time over the last ${sw.blocks} timed blocks:</span>`
+      + part("Solo45", sw.solo45_ms) + part("Datum", sw.datum_ms) + part("Go Brrr", sw.gobrrr_ms);
+  }
+  const rows = [];
+  const bl = s.blocks;
+  for (let i = 0; i < bl.length; i++) {
+    const b = bl[i], prev = bl[i + 1];
+    const gap = prev ? (b.seen_ms - prev.seen_ms) / 1000 : null;
+    const n = Object.keys(b.miners || {}).length;
+    const vals = Object.values(b.miners || {});
+    const slowest = vals.length ? Math.max(...vals) : null;
+    let ck = "—";
+    if (b.gobrrr_ms != null) ck = b.live ? fmtMs(b.gobrrr_ms) : (b.gobrrr_ms < 1000 ? "&lt;1 s" : fmtMs(b.gobrrr_ms));
+    rows.push(`<tr>
+      <td class="first num">${b.height.toLocaleString()}</td>
+      <td class="num">${clock(b.seen_ms)}</td>
+      <td class="r num">${gap != null ? fmtDur(gap) : "—"}</td>
+      <td class="r num">${b.solo45_ms != null ? fmtMs(b.solo45_ms) : "—"}</td>
+      <td class="r num">${b.datum_ms != null ? fmtMs(b.datum_ms) : "—"}</td>
+      <td class="r num">${ck}</td>
+      <td class="r num">${b.live ? (n ? `${n} · slowest ${fmtMs(slowest)}` : "…") : '<span class="faint">before start</span>'}</td>
+    </tr>`);
+  }
+  $("blocks").innerHTML = rows.join("");
+}
+
+function renderChart(s) {
+  const h = s.history || [];
+  const svg = $("chart");
+  const W = 600, H = 190, pad = {l: 44, r: 8, t: 10, b: 22};
+  const cs = getComputedStyle(document.documentElement);
+  const line = cs.getPropertyValue("--line").trim(), muted = cs.getPropertyValue("--muted").trim(), text = cs.getPropertyValue("--text").trim();
+  if (h.length < 2) {
+    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" fill="${muted}" font-size="13">Collecting data — the first points appear within a minute</text>`;
+    $("legend").innerHTML = "";
+    return;
+  }
+  const t0 = h[0][0], t1 = h[h.length - 1][0];
+  const maxV = Math.max(...h.map(p => p[1])) * 1.1 || 1;
+  const x = t => pad.l + (t - t0) / Math.max(1, t1 - t0) * (W - pad.l - pad.r);
+  const y = v => H - pad.b - v / maxV * (H - pad.t - pad.b);
+  const pools = [...new Set(h.flatMap(p => Object.keys(p[2] || {})))];
+  let out = "";
+  for (let i = 0; i <= 3; i++) {
+    const v = maxV * i / 3, yy = y(v);
+    out += `<line x1="${pad.l}" x2="${W - pad.r}" y1="${yy}" y2="${yy}" stroke="${line}" stroke-width="1"/>`;
+    out += `<text x="${pad.l - 6}" y="${yy + 4}" text-anchor="end" fill="${muted}" font-size="10">${Math.round(v)}</text>`;
+  }
+  const hrs = (t1 - t0) / 3600;
+  const step = hrs > 12 ? 4 * 3600 : hrs > 4 ? 3600 : hrs > 1 ? 1800 : 600;
+  for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
+    out += `<text x="${x(t)}" y="${H - 6}" text-anchor="middle" fill="${muted}" font-size="10">${new Date(t * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"})}</text>`;
+  }
+  const path = f => h.map((p, i) => (i ? "L" : "M") + x(p[0]).toFixed(1) + " " + y(f(p)).toFixed(1)).join(" ");
+  out += `<path d="${path(p => p[1])} L${x(t1)} ${y(0)} L${x(t0)} ${y(0)} Z" fill="${text}" opacity=".06"/>`;
+  out += `<path d="${path(p => p[1])}" fill="none" stroke="${text}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`;
+  for (const p of pools) out += `<path d="${path(q => (q[2] || {})[p] || 0)}" fill="none" stroke="${poolColor(p)}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`;
+  svg.innerHTML = out;
+  $("chartRange").textContent = hrs >= 23 ? "last 24 hours" : "since " + new Date(t0 * 1000).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"}) + " · TH/s";
+  $("legend").innerHTML = `<span><i class="dot" style="background:${text}"></i>Total</span>` +
+    pools.map(p => `<span><i class="dot" style="background:${poolColor(p)}"></i>${esc(p)}</span>`).join("");
+}
+
+// ticking "time since block"
+setInterval(() => {
+  if (state && state.tip) $("tipAgo").textContent = fmtDur((Date.now() - state.tip.seen_ms) / 1000);
+}, 1000);
+
+// ---- live connection
+function setLive(on, text) {
+  $("live").classList.toggle("on", on);
+  $("live").querySelector("span").textContent = text;
+}
+function connect() {
+  const es = new EventSource("events");
+  es.addEventListener("state", e => { setLive(true, "live"); render(JSON.parse(e.data)); });
+  es.addEventListener("block", e => {
+    const b = JSON.parse(e.data);
+    if (state) { state.tip = b; state.blocks = [b, ...state.blocks.filter(x => x.hash !== b.hash)]; render(state); }
+  });
+  es.addEventListener("shares", e => addShares(JSON.parse(e.data), true));
+  es.onerror = () => setLive(false, "reconnecting…");
+}
+fetch("api/state").then(r => r.json()).then(render).catch(() => {});
+fetch("api/shares").then(r => r.json()).then(list => addShares(list, false)).catch(() => {});
+connect();
+</script>
+</body>
+</html>
