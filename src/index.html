@@ -302,6 +302,14 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <span class="muted" id="refreshNote"></span>
     </div>
     <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes. Datum uses 120.</div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="kwhPrice">Electricity price:</label>
+      <input type="text" id="kwhCur" maxlength="3" aria-label="Currency symbol" style="width:44px;text-align:center">
+      <input type="number" id="kwhPrice" min="0" max="5" step="0.001" style="width:90px"> <span>per kWh</span>
+      <button class="btn small" id="kwhSave" type="button">Save</button>
+      <span class="muted" id="kwhNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px">Used for the cost per day and per month. The power is what the miners report, which is usually a little below what they draw from the wall.</div>
     <h2>Share difficulty per miner <span class="muted">only changes how often a miner sends shares, not your chance of a block</span></h2>
     <div class="tablewrap">
       <table>
@@ -362,6 +370,38 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
     </div>
   </section>
 
+  <section class="card" id="aiSettings" style="margin-bottom:12px">
+    <h2>AI settings <span class="muted">the assistant uses your own Anthropic account and only spends up to your limits</span></h2>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="aiKey">API key:</label>
+      <input type="password" id="aiKey" autocomplete="off" placeholder="sk-ant-…" style="width:230px">
+      <button class="btn small" id="aiKeySave" type="button">Save key</button>
+      <button class="btn small" id="aiKeyRemove" type="button">Remove key</button>
+      <span class="muted" id="aiKeyNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px">Create a key at console.anthropic.com (API keys). It's stored only on this Umbrel and never shown again. The AI is billed to that account.</div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="aiModel">Model:</label>
+      <select id="aiModel"></select>
+      <label for="aiWeek">Limit per week $</label>
+      <input type="number" id="aiWeek" min="0" max="1000" step="0.5" style="width:70px">
+      <label for="aiMonth">per month $</label>
+      <input type="number" id="aiMonth" min="0" max="1000" step="0.5" style="width:70px">
+    </div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="aiEvery">Automatic report:</label>
+      <select id="aiEvery">
+        <option value="0">Off</option><option value="1">Every day</option><option value="2">Every 2 days</option>
+        <option value="3">Every 3 days</option><option value="7">Every week</option>
+      </select>
+      <label for="aiHour">after</label>
+      <select id="aiHour"></select>
+      <button class="btn small" id="aiSettingsSave" type="button">Save settings</button>
+      <span class="muted" id="aiSettingsNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0">Cheaper models cost less per question but give simpler answers. When a limit is reached the AI pauses until older spending is more than a week (or a month) old.</div>
+  </section>
+
   <footer>
     <span>Updates live from your node, Solo45, Go Brrr, and each miner. Only Solo45 share difficulty can be changed here.</span>
     <span id="updated"></span>
@@ -391,6 +431,7 @@ let state = null, lastTipHash = null;
 
 // ---- formatting
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const cur = () => (state && state.totals && state.totals.currency) || "$";
 function fmtTH(ths) {
   if (ths == null) return "—";
   if (ths >= 1000) return (ths / 1000).toFixed(2) + " PH/s";
@@ -464,8 +505,12 @@ function render(s) {
     + `<span>${T.online}/${T.count} online</span>`;
   $("kPower").innerHTML = T.power ? (T.power >= 1000 ? (T.power / 1000).toFixed(2) + "<small>kW</small>" : Math.round(T.power) + "<small>W</small>") : "—";
   $("kEff").innerHTML = (T.j_per_th ? `<span class="num">${T.j_per_th.toFixed(1)} J/TH</span>` : "")
-    + (T.cost_day ? `<span class="num">$${T.cost_day.toFixed(2)}/day · $${(T.cost_day * 30.4).toFixed(0)}/mo</span>` : "")
-    + `<span>ASIC-reported, not wall power${T.kwh_price ? " · $" + T.kwh_price + "/kWh" : ""}</span>`;
+    + (T.cost_day ? `<span class="num">${esc(cur())}${T.cost_day.toFixed(2)}/day · ${esc(cur())}${(T.cost_day * 30.4).toFixed(0)}/mo</span>` : "")
+    + `<span>ASIC-reported, not wall power${T.kwh_price ? " · " + esc(cur()) + T.kwh_price + "/kWh" : ""}</span>`;
+  if (document.activeElement !== $("kwhPrice") && document.activeElement !== $("kwhCur")) {
+    $("kwhPrice").value = T.kwh_price ?? "";
+    $("kwhCur").value = cur();
+  }
   $("kOdds").textContent = T.odds ? fmtPct(T.odds.p_day) : "—";
   $("kOddsYear").innerHTML = T.odds ? `<span>${fmtPct(T.odds.p_year)} over a year</span>` : "";
   $("kExp").textContent = T.odds ? fmtDur(T.odds.expected_s) : "—";
@@ -646,7 +691,7 @@ function renderMiners(s) {
         <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
         <td class="pool-tag">${esc(m.pool)}${m.on_fallback ? ' <span class="hot">(fallback)</span>' : ""}</td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}${seenLine}</td>
-        <td class="r num">${m.power ? Math.round(m.power) + " W" : "—"}${m.cost_day ? `<div class="msub">$${m.cost_day.toFixed(2)}/day</div>` : ""}</td>
+        <td class="r num">${m.power ? Math.round(m.power) + " W" : "—"}${m.cost_day ? `<div class="msub">${esc(cur())}${m.cost_day.toFixed(2)}/day</div>` : ""}</td>
         <td class="r num hide-sm">${off ? "—" : jth}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
         <td class="r num hide-sm" title="${m.best_session != null ? "since restart / all-time" : "since restart"}">${best}</td>
@@ -708,6 +753,23 @@ async function saveSetting(name, body, note) {
     return false;
   }
 }
+
+$("kwhSave").addEventListener("click", async () => {
+  const price = parseFloat($("kwhPrice").value), currency = $("kwhCur").value.trim() || "$";
+  if (!(price >= 0 && price <= 5)) { $("kwhNote").textContent = "Enter your price per kWh, for example 0.12."; return; }
+  $("kwhSave").disabled = true;
+  $("kwhNote").textContent = "Saving…";
+  try {
+    const r = await fetch("/api/dash/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({kwh_price: price, currency})});
+    const j = await r.json();
+    $("kwhNote").textContent = r.ok ? `Saved: ${j.currency}${j.kwh_price} per kWh` : `Not saved: ${j.error || r.status}`;
+    if (r.ok && state && state.totals) Object.assign(state.totals, {kwh_price: j.kwh_price, currency: j.currency});
+  } catch (e) {
+    $("kwhNote").textContent = "Not saved: " + e.message;
+  }
+  $("kwhSave").disabled = false;
+  $("kwhPrice").blur(); $("kwhCur").blur();
+});
 
 $("refreshSave").addEventListener("click", async () => {
   const v = parseFloat($("refreshS").value);
@@ -875,10 +937,12 @@ async function aiStatus() {
   if (st.unavailable) {
     $("aiFoot").textContent = "The AI library isn't installed, so the assistant is off.";
   } else if (!st.enabled) {
-    $("aiFoot").innerHTML = "Add your Anthropic API key to turn this on: put it in <code>~/solo-dash/anthropic_key</code> on the Umbrel.";
+    $("aiFoot").innerHTML = "Add your Anthropic API key under <b>AI settings</b> below to turn this on.";
   } else {
-    $("aiFoot").innerHTML = `<span>${esc(st.model)}</span><span>This week <span class="num">${money(st.spent_week)}</span> of $${st.weekly_cap}</span><span>This month <span class="num">${money(st.spent_month)}</span> of $${st.monthly_cap}</span><span>about 10–20¢ per question</span>`;
+    const m = (st.models || []).find(x => x.id === st.model);
+    $("aiFoot").innerHTML = `<span>${esc(m ? m.name.split(" - ")[0] : st.model)}</span><span>This week <span class="num">${money(st.spent_week)}</span> of $${st.weekly_cap}</span><span>This month <span class="num">${money(st.spent_month)}</span> of $${st.monthly_cap}</span>${m ? `<span>${esc(m.per_question)} per question</span>` : ""}`;
   }
+  if (!st.unavailable) fillAiSettings(st);
   $("aiSend").disabled = $("repBtn").disabled = !st.enabled;
   if (st.report) {
     $("repText").innerHTML = md(st.report.text);
@@ -886,9 +950,59 @@ async function aiStatus() {
     $("repNote").textContent = `cost ${money(st.report.cost)}`;
   } else if (st.enabled) {
     const every = st.report_every_days > 1 ? `every ${st.report_every_days} days` : "every day";
-    $("repNote").textContent = `A new report is written ${every} after ${st.report_hour}:00.`;
+    $("repNote").textContent = st.report_every_days > 0 ? `A new report is written ${every} after ${st.report_hour}:00.` : "Automatic reports are off.";
   }
 }
+
+let aiSettingsFilled = false;
+function fillAiSettings(st) {
+  $("aiKeyNote").textContent = st.key_hint ? `Key saved (${st.key_hint})` : "No key saved";
+  if (aiSettingsFilled || $("aiSettings").contains(document.activeElement)) return;
+  $("aiModel").innerHTML = (st.models || []).map(m =>
+    `<option value="${esc(m.id)}">${esc(m.name)} (${esc(m.per_question)} a question)</option>`).join("");
+  $("aiModel").value = st.model;
+  $("aiWeek").value = st.weekly_cap;
+  $("aiMonth").value = st.monthly_cap;
+  if (![...$("aiEvery").options].some(o => +o.value === st.report_every_days))
+    $("aiEvery").insertAdjacentHTML("beforeend", `<option value="${st.report_every_days}">Every ${st.report_every_days} days</option>`);
+  $("aiEvery").value = String(st.report_every_days);
+  $("aiHour").innerHTML = Array.from({length: 24}, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
+  $("aiHour").value = String(st.report_hour);
+  aiSettingsFilled = true;
+}
+
+async function aiPost(url, body, note) {
+  $(note).textContent = "Saving…";
+  try {
+    const r = await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const j = await r.json();
+    if (!r.ok) { $(note).textContent = "Not saved: " + (j.error || r.status); return null; }
+    return j;
+  } catch (e) {
+    $(note).textContent = "Not saved: " + e.message;
+    return null;
+  }
+}
+
+$("aiKeySave").addEventListener("click", async () => {
+  const key = $("aiKey").value.trim();
+  if (!key) { $("aiKeyNote").textContent = "Paste your key first."; return; }
+  const j = await aiPost("/api/ai/key", {key}, "aiKeyNote");
+  if (j) { $("aiKey").value = ""; $("aiKeyNote").textContent = `Key saved (${j.key_hint})`; aiStatus(); }
+});
+$("aiKeyRemove").addEventListener("click", async () => {
+  if (!confirm("Remove the saved API key? The AI will stop working until you add one again.")) return;
+  const j = await aiPost("/api/ai/key", {key: ""}, "aiKeyNote");
+  if (j) { $("aiKeyNote").textContent = "Key removed"; aiStatus(); }
+});
+$("aiSettingsSave").addEventListener("click", async () => {
+  const body = {model: $("aiModel").value, weekly_cap_usd: parseFloat($("aiWeek").value),
+                monthly_cap_usd: parseFloat($("aiMonth").value), report_every_days: parseInt($("aiEvery").value),
+                report_hour: parseInt($("aiHour").value)};
+  if (!(body.weekly_cap_usd >= 0) || !(body.monthly_cap_usd >= 0)) { $("aiSettingsNote").textContent = "Enter both limits in dollars."; return; }
+  const j = await aiPost("/api/ai/settings", body, "aiSettingsNote");
+  if (j) { $("aiSettingsNote").textContent = "Saved"; aiSettingsFilled = false; aiStatus(); }
+});
 
 function proposalHtml(p, id) {
   const what = p.diff != null ? `fixed difficulty ${fmtDiff(p.diff)}` : p.share_seconds != null ? `1 share every ${p.share_seconds} s` : "automatic difficulty";

@@ -22,11 +22,20 @@ REPORTS_PATH = os.path.join(DATA, "ai_reports.json")
 
 # USD per million tokens (input, output). Cache writes cost 1.25x input, cache reads 0.1x.
 PRICES = {
+    "claude-fable-5-1": (10.0, 50.0),
     "claude-opus-5": (5.0, 25.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5": (2.0, 10.0),
     "claude-haiku-4-5": (1.0, 5.0),
 }
+# The models offered on the dashboard, cheapest first: (id, name, rough cost of one question).
+MODELS = [
+    ("claude-haiku-4-5", "Claude Haiku 4.5 - cheapest, simpler answers", "about 3¢"),
+    ("claude-sonnet-5", "Claude Sonnet 5 - good balance", "about 5¢"),
+    ("claude-opus-5", "Claude Opus 5 - recommended", "about 13¢"),
+    ("claude-fable-5-1", "Claude Fable 5.1 - most capable", "about 26¢"),
+]
+FALLBACK_MODELS = ("claude-opus-5", "claude-fable-5-1")  # models that take the server-side refusal fallback
 MAX_TOOL_ROUNDS = 8
 
 LOGS = {
@@ -151,6 +160,28 @@ class Assistant:
             key = ""
         return key or os.environ.get("ANTHROPIC_API_KEY", "")
 
+    def key_hint(self):
+        key = self.api_key()
+        return "…" + key[-4:] if len(key) > 8 else ""
+
+    def set_key(self, key):
+        """Save (or with an empty key, remove) the owner's Anthropic API key. The key is never sent back."""
+        key = str(key or "").strip()
+        if not key:
+            try:
+                os.remove(KEY_PATH)
+            except FileNotFoundError:
+                pass
+            return 200, {"ok": True, "key_hint": ""}
+        if not key.startswith("sk-ant-") or not 20 <= len(key) <= 300 or any(c.isspace() for c in key):
+            return 400, {"error": "That doesn't look like an Anthropic API key (they start with sk-ant-)."}
+        tmp = KEY_PATH + ".tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(key)
+        os.replace(tmp, KEY_PATH)
+        return 200, {"ok": True, "key_hint": self.key_hint()}
+
     def spent(self, days):
         cutoff = time.time() - days * 86400
         return sum(c for t, c, _ in _load(USAGE_PATH, []) if t >= cutoff)
@@ -176,7 +207,9 @@ class Assistant:
         reports = _load(REPORTS_PATH, [])
         return {
             "enabled": bool(self.api_key()),
+            "key_hint": self.key_hint(),
             "model": self.cfg["model"],
+            "models": [{"id": m, "name": n, "per_question": q} for m, n, q in MODELS],
             "spent_week": round(self.spent(7), 4),
             "spent_month": round(self.spent(30), 4),
             "weekly_cap": self.cfg["weekly_cap_usd"],
@@ -227,7 +260,7 @@ class Assistant:
         """Answer one question. history: earlier [{"q": ..., "a": ...}] turns from the page."""
         key = self.api_key()
         if not key:
-            return {"error": "No API key yet. Put your Anthropic API key in the file anthropic_key in %s." % DATA}
+            return {"error": "No API key yet. Add your Anthropic API key under AI settings on the dashboard."}
         if self.budget_left() <= 0:
             return {"error": "Spending cap reached ($%.2f per week, $%.2f per month). The AI will be available again as older usage rolls off."
                     % (self.cfg["weekly_cap_usd"], self.cfg["monthly_cap_usd"])}
@@ -247,6 +280,8 @@ class Assistant:
             for _ in range(MAX_TOOL_ROUNDS):
                 if self.budget_left() <= 0:
                     return {"error": "Spending cap reached partway through this answer.", "cost": cost}
+                # the server-side refusal fallback is only offered on some models
+                extra = {"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"} if model in FALLBACK_MODELS else {}
                 response = client.beta.messages.create(
                     model=model,
                     max_tokens=16000,
@@ -254,8 +289,7 @@ class Assistant:
                     tools=TOOLS,
                     messages=messages,
                     cache_control={"type": "ephemeral"},
-                    betas=["server-side-fallback-2026-07-01"],
-                    fallbacks="default",
+                    **extra,
                 )
                 cost += self.record_cost(response.usage, response.model, kind)
                 if response.stop_reason == "refusal":
@@ -322,6 +356,8 @@ class Assistant:
             reports = _load(REPORTS_PATH, [])
             last = datetime.fromtimestamp(reports[-1]["at"]) if reports else None
             every = self.cfg.get("report_every_days", 1)
+            if every <= 0:  # automatic reports are off
+                continue
             if now.hour >= self.cfg["report_hour"] and (last is None or (now.date() - last.date()).days >= every):
                 last_try = time.time()
                 self.make_report()

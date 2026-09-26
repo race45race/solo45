@@ -52,7 +52,8 @@ CFG = {
     "rpc_cookie": NODE_DIR + "/.cookie",
     "rpc_user": "",  # when set, used instead of the cookie file
     "rpc_pass": "",
-    "kwh_price": 0.12,  # USD per kWh, for the electricity cost figures (set yours in config.json)
+    "kwh_price": 0.12,  # price per kWh for the electricity cost figures; set on the dashboard
+    "currency": "$",    # symbol shown with costs
     "ai": {"model": "claude-opus-5", "weekly_cap_usd": 2.0, "monthly_cap_usd": 8.0, "report_hour": 8,
            "report_every_days": 3},
 }
@@ -810,6 +811,7 @@ def snapshot():
                 "power": power,
                 "cost_day": power / 1000 * 24 * CFG["kwh_price"],
                 "kwh_price": CFG["kwh_price"],
+                "currency": CFG["currency"],
                 "j_per_th": power / total if total else None,
                 "online": len(up),
                 "count": len(miners),
@@ -851,6 +853,83 @@ def history_sample(hours):
     for ts, total, by_pool in hist[::20]:
         out.append({"time": datetime.fromtimestamp(ts).strftime("%H:%M"), "ths": total, "by_pool": by_pool})
     return out
+
+
+def save_dash_settings(data):
+    """Electricity price and currency from the dashboard, saved in config.json so they survive restarts."""
+    new = {}
+    if "kwh_price" in data:
+        try:
+            price = float(data["kwh_price"])
+        except (TypeError, ValueError):
+            return 400, {"error": "the price must be a number"}
+        if not 0 <= price <= 5:
+            return 400, {"error": "the price must be between 0 and 5 per kWh"}
+        new["kwh_price"] = round(price, 4)
+    if "currency" in data:
+        cur = str(data["currency"] or "").strip()
+        if not 1 <= len(cur) <= 3 or any(c in cur for c in "<>&\"'"):
+            return 400, {"error": "the currency symbol must be 1 to 3 characters, like $ or €"}
+        new["currency"] = cur
+    if not new:
+        return 400, {"error": "nothing to save"}
+    save_config(new)
+    CFG.update(new)
+    return 200, {"ok": True, "kwh_price": CFG["kwh_price"], "currency": CFG["currency"]}
+
+
+def save_config(new, section=None):
+    """Merge settings into config.json (or its "ai" section), keeping everything else in it."""
+    with lock:
+        try:
+            with open(CFG_PATH) as f:
+                saved = json.load(f)
+        except (OSError, ValueError):
+            saved = {}
+        (saved.setdefault(section, {}) if section else saved).update(new)
+        tmp = CFG_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(saved, f, indent=1)
+        os.replace(tmp, CFG_PATH)
+
+
+def save_ai_settings(data):
+    """Model, spending caps and report schedule for the AI assistant."""
+    new = {}
+    if "model" in data:
+        if data["model"] not in [m for m, _, _ in ai.MODELS]:
+            return 400, {"error": "unknown model"}
+        new["model"] = data["model"]
+    for key in ("weekly_cap_usd", "monthly_cap_usd"):
+        if key in data:
+            try:
+                val = float(data[key])
+            except (TypeError, ValueError):
+                return 400, {"error": "the spending limits must be numbers"}
+            if not 0 <= val <= 1000:
+                return 400, {"error": "the spending limits must be between $0 and $1,000"}
+            new[key] = round(val, 2)
+    if "report_every_days" in data:
+        try:
+            val = int(data["report_every_days"])
+        except (TypeError, ValueError):
+            return 400, {"error": "bad report schedule"}
+        if not 0 <= val <= 30:
+            return 400, {"error": "reports can be every 1 to 30 days, or off"}
+        new["report_every_days"] = val
+    if "report_hour" in data:
+        try:
+            val = int(data["report_hour"])
+        except (TypeError, ValueError):
+            return 400, {"error": "bad report hour"}
+        if not 0 <= val <= 23:
+            return 400, {"error": "the report hour must be 0 to 23"}
+        new["report_hour"] = val
+    if not new:
+        return 400, {"error": "nothing to save"}
+    save_config(new, "ai")
+    CFG["ai"].update(new)  # the assistant reads this same dict
+    return 200, dict(assistant.status(), ok=True)
 
 
 def post_json(url, data, timeout=5):
@@ -1020,8 +1099,17 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
             return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/dash/settings":
+            code, reply = save_dash_settings(data)
+            return self.send(code, json.dumps(reply).encode(), "application/json")
         if path.startswith("/api/ai/") and not assistant:
             return self.send(503, b'{"error":"The AI assistant is not installed."}', "application/json")
+        if path == "/api/ai/key":
+            code, reply = assistant.set_key(data.get("key"))
+            return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/ai/settings":
+            code, reply = save_ai_settings(data)
+            return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/ai/ask":
             reply = assistant.ask(data.get("question", ""), data.get("history") or [])
         elif path == "/api/ai/report":

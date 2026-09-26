@@ -213,6 +213,13 @@ class StratumError(Exception):
         self.code, self.msg = code, msg
 
 
+def fmt_diff(d):
+    for unit, size in (("T", 1e12), ("G", 1e9), ("M", 1e6), ("K", 1e3)):
+        if d >= size:
+            return "%.3g%s" % (d / size, unit)
+    return "%.3g" % d
+
+
 def hashrate(shares, window, now):
     total = sum(d for t, d in shares if t > now - window)
     return total * 2 ** 32 / window
@@ -355,6 +362,7 @@ class Worker:
         await self.send({"id": None, "method": "mining.notify", "params": job.notify_params(self.spk, clean)})
 
     def reject(self, reason, code, msg):
+        log.warning("share rejected from %s (%s): %s", self.name, self.ip, reason)
         self.rejected[reason] += 1
         self.pool.rejected[reason] += 1
         self.pool.log_share(self.name, None, None, reason)
@@ -468,6 +476,8 @@ class Pool:
         self.rejected = collections.Counter()
         self.shares = collections.deque()
         self.best = {"diff": 0.0}
+        self.window_best = {"diff": 0.0}  # best share since the last 5-minute stats line
+        self.stats_mark = (0, 0)
         self.share_log = collections.deque(maxlen=300)  # recent shares for the dashboard's live feed
         self.share_seq = itertools.count(1)
         self.last_switch = None
@@ -519,11 +529,13 @@ class Pool:
             self.job, self.tip = job, job.prev_hex
             workers = [w for w in self.workers if w.authorized]
             await asyncio.gather(*(w.send_job(job, clean or new_block) for w in workers), return_exceptions=True)
+            ms = round((time.time() - t0) * 1000)
             if new_block:
-                ms = round((time.time() - t0) * 1000)
                 self.last_switch = {"height": job.height, "ms": ms, "at": time.time(), "workers": len(workers)}
-                log.info("new block %d: %d txs, fees %.4f BTC, sent to %d workers in %d ms",
-                         job.height, len(job.tx_data), job.fees / 1e8, len(workers), ms)
+                log.info("new network block %d (%s), now mining %d", job.height - 1, job.prev_hex, job.height)
+            log.info("%s job %s for block %d: %.8f BTC, %d txs, %s bytes, fees %.4f BTC (sent to %d workers in %d ms)",
+                     "new-block" if new_block else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
+                     "{:,}".format(sum(len(t) for t in job.tx_data)), job.fees / 1e8, len(workers), ms)
         # the node fully checks every new block's work; routine refreshes at most every 10 s,
         # so a short refresh interval doesn't keep the node busy validating
         if new_block or time.time() - self.last_proposal >= 10:
@@ -533,6 +545,7 @@ class Pool:
     async def check_proposal(self, job):
         """Have bitcoind validate a complete block built from this job (everything except proof of work)."""
         spks = {w.spk for w in self.workers if w.spk} | {self.default_spk}
+        t0 = time.time()
         for spk in spks:
             coinbase = job.coinb1 + bytes(EN1_SIZE + EN2_SIZE) + job.coinb2(spk)
             header = job.header(coinbase, job.version, job.curtime, 0)
@@ -543,6 +556,9 @@ class Pool:
             if res == "inconclusive-not-best-prevblk":
                 return  # a newer block arrived meanwhile; the next job gets checked
             ok = res is None
+            if ok:
+                log.info("block check OK for %d (job %s, %d txs) in %d ms",
+                         job.height, job.id, len(job.tx_data), (time.time() - t0) * 1000)
             self.proposal = {"ok": ok, "result": res, "height": job.height, "at": time.time(), "outputs": len(spks)}
             if not ok:
                 log.error("BLOCK PROPOSAL REJECTED at height %d: %s", job.height, res)
@@ -581,6 +597,8 @@ class Pool:
             self.shares.popleft()
         if share_diff > self.best["diff"]:
             self.best = {"diff": share_diff, "worker": worker.name, "at": now}
+        if share_diff > self.window_best["diff"]:
+            self.window_best = {"diff": share_diff, "worker": worker.name}
         if share_diff > self.state["best_ever"]["diff"]:
             self.state["best_ever"] = {"diff": share_diff, "worker": worker.name, "at": now}
 
@@ -617,8 +635,11 @@ class Pool:
             await asyncio.sleep(15)
             now = time.time()
             for w in list(self.workers):
+                old = w.diff
                 new = w.vardiff(now)
                 if new:
+                    log.info("%s difficulty %s -> %s (1 share / %g s)", w.name, fmt_diff(old), fmt_diff(new),
+                             w.override().get("share_seconds") or self.cfg["share_seconds"])
                     try:
                         await w.send_difficulty()
                     except Exception:
@@ -626,6 +647,20 @@ class Pool:
             n += 1
             if n % 4 == 0:
                 self.save_state()
+            if n % 20 == 0:  # every 5 minutes
+                self.log_stats(now)
+
+    def log_stats(self, now):
+        accepted = self.accepted - self.stats_mark[0]
+        rejected = sum(self.rejected.values()) - self.stats_mark[1]
+        best = self.window_best
+        log.info("stats: %d workers, %.1f TH/s (5 min), %s shares accepted, %d rejected in 5 min%s",
+                 len([w for w in self.workers if w.authorized]),
+                 hashrate(self.shares, min(300, max(now - self.started, 60)), now) / 1e12,
+                 "{:,}".format(accepted), rejected,
+                 ", best %s (%s)" % (fmt_diff(best["diff"]), best["worker"]) if best["diff"] else "")
+        self.stats_mark = (self.accepted, sum(self.rejected.values()))
+        self.window_best = {"diff": 0.0}
 
     # -- api
 
