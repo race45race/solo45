@@ -3,12 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Solo Mining</title>
+<title>Solo45</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="Solo Mining">
+<meta name="apple-mobile-web-app-title" content="Solo45">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#0d1014">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='15' fill='%23f7931a'/><text x='16' y='23' font-size='20' text-anchor='middle' fill='white' font-family='Arial' font-weight='bold'>₿</text></svg>">
@@ -53,6 +53,7 @@ body {
 
 header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 17px; letter-spacing: -.01em; }
+.brand-logo { width: 30px; height: 30px; border-radius: 50%; display: block; }
 .brand .coin { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
   display: grid; place-items: center; font-weight: 800; font-size: 15px; }
 .tipbox { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-left: auto; }
@@ -216,7 +217,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
 </div>
 <div class="wrap">
   <header>
-    <div class="brand"><div class="coin">₿</div>Solo Mining</div>
+    <div class="brand"><img class="brand-logo" src="icon-192.png" alt="">Solo45</div>
     <span class="live" id="live"><i></i><span>connecting…</span></span>
     <div class="tipbox">
       <span class="h">Block <span class="num" id="tipH">—</span></span>

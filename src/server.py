@@ -1020,7 +1020,7 @@ INDEX = os.path.join(BASE, "index.html")
 STATIC_DIR = os.path.join(BASE, "static")
 ICONS = ("icon-192.png", "icon-512.png", "apple-touch-icon.png")
 MANIFEST = json.dumps({  # lets phones add the dashboard to the home screen as an app
-    "name": "Solo Mining", "short_name": "Solo Mining", "start_url": "/", "display": "standalone",
+    "name": "Solo45", "short_name": "Solo45", "start_url": "/", "display": "standalone",
     "background_color": "#0d1014", "theme_color": "#0d1014",
     "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
               {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}],
