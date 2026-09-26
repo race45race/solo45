@@ -1018,7 +1018,7 @@ def state_push_loop():
 
 INDEX = os.path.join(BASE, "index.html")
 STATIC_DIR = os.path.join(BASE, "static")
-ICONS = ("icon-192.png", "icon-512.png", "apple-touch-icon.png")
+ICONS = ("icon-192.png", "icon-512.png", "apple-touch-icon.png", "logo-mark.png")
 MANIFEST = json.dumps({  # lets phones add the dashboard to the home screen as an app
     "name": "Solo45", "short_name": "Solo45", "start_url": "/", "display": "standalone",
     "background_color": "#0d1014", "theme_color": "#0d1014",
@@ -1052,7 +1052,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send(200, MANIFEST, "application/manifest+json")
         elif path.lstrip("/") in ICONS or path == "/favicon.ico":
             try:
-                with open(os.path.join(STATIC_DIR, "icon-192.png" if path == "/favicon.ico" else path.lstrip("/")), "rb") as f:
+                with open(os.path.join(STATIC_DIR, "logo-mark.png" if path == "/favicon.ico" else path.lstrip("/")), "rb") as f:
                     self.send(200, f.read(), "image/png")
             except OSError:
                 self.send(404, b"not found", "text/plain")
