@@ -7,14 +7,13 @@ services:
       APP_PORT: 8099
 
   pool:
-    image: ghcr.io/race45race/solo45:v0.1.4@sha256:a92db490af5ee95f8b28d0e672663d06fd5b8a4adb6479ad301f10f4c3eee2be
+    image: ghcr.io/race45race/solo45:v0.1.5@sha256:2319107cc7e05e05331d8813014d4ee0b469e6acd688feb4f701b25a38f14da7
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 10s
     command: ["python", "/app/pool.py"]
     ports:
-      - "3333:3333"             # stratum for miners
-      - "127.0.0.1:3381:3380"   # pool API, for health checks on the Umbrel itself
+      - "3333:3333"  # stratum for miners
     volumes:
       - ${APP_DATA_DIR}/data/pool:/data/pool
     environment:
@@ -23,17 +22,18 @@ services:
       BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
       BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
       BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}
+    networks:
+      default:
+        ipv4_address: ${APP_SOLO45_POOL_IP}  # fixed, so health checks on the Umbrel can read the pool's API
 
   dashboard:
-    image: ghcr.io/race45race/solo45:v0.1.4@sha256:a92db490af5ee95f8b28d0e672663d06fd5b8a4adb6479ad301f10f4c3eee2be
+    image: ghcr.io/race45race/solo45:v0.1.5@sha256:2319107cc7e05e05331d8813014d4ee0b469e6acd688feb4f701b25a38f14da7
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 10s
     depends_on:
       - pool
     command: ["sh", "-c", "exec python /app/server.py >> /data/dash/dashboard.log 2>&1"]
-    ports:
-      - "127.0.0.1:18098:8099"  # dashboard, for health checks on the Umbrel itself
     volumes:
       - ${APP_DATA_DIR}/data/dash:/data/dash
       - ${APP_DATA_DIR}/data/pool:/data/pool:ro
@@ -43,7 +43,11 @@ services:
       SOLO45_POOL_LOG: /data/pool/pool.log
       SOLO45_API_BASE: http://solo45-pool_pool_1:3380
       SOLO45_API_TOKEN: ${APP_SOLO45_POOL_API_TOKEN}
+      SOLO45_PROXY_HOST: solo45-pool_app_proxy_1  # changes are only accepted through the Umbrel login
       BITCOIN_DATA_DIR: /bitcoin
       BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
       BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
       BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}
+    networks:
+      default:
+        ipv4_address: ${APP_SOLO45_POOL_DASHBOARD_IP}

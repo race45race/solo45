@@ -2,11 +2,11 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.4"
+version: "0.1.5"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
-  ⚙️ Setup: after installing, put your payout address in data/pool/config.json as {"default_address": "bc1q..."} and point your miners at your Umbrel's IP address on port 3333. A setup page is planned.
+  ⚙️ Setup: open Solo45 after installing and enter your payout address. Then point your miners at your Umbrel's IP address on port 3333 (stratum+tcp://umbrel.local:3333).
 
 
   Solo45 is a small solo-mining Stratum v1 pool that builds work from your own Bitcoin node. Every new job is checked with the node's getblocktemplate "proposal" mode, so a malformed block would show up within seconds instead of on the day you find one.
@@ -14,10 +14,16 @@ description: >-
 
   The dashboard shows each miner's hashrate, temperatures and best shares, how fast your miners switch to each new block, and your odds. It supports Bitaxe (AxeOS) and Braiins OS miners. An optional AI assistant can explain what it sees if you add your own Anthropic API key.
 releaseNotes: >-
-  - Template policy: choose which kinds of transactions go into the blocks Solo45 builds (inscriptions, Runes, large OP_RETURN data, bare multisig, low fee rate). It starts in watch-only mode, which only counts what would be skipped; switch it to Filter on the dashboard when you're ready. Every filtered job is still checked by your node.
+  - The dashboard moved to port 4545 (port 8099 belongs to another app in the Umbrel App Store). Update your bookmarks.
 
 
-  - Click the price per kWh under the power figure to jump to the electricity price setting.
+  - Set your payout address on the dashboard; no need to edit files.
+
+
+  - Dashboard settings can only be changed through the Umbrel login.
+
+
+  - New Solo45 icon.
 
 developer: race45race
 website: https://github.com/race45race/solo45
@@ -26,7 +32,7 @@ dependencies:
 repo: https://github.com/race45race/solo45
 support: https://github.com/race45race/solo45/issues
 
-port: 8099
+port: 4545
 gallery: []
 path: ""
 
