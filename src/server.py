@@ -48,6 +48,7 @@ CFG = {
     "solo45_settings_api": SOLO45 + "/api/worker",
     "solo45_pool_settings_api": SOLO45 + "/api/settings",
     "solo45_policy_api": SOLO45 + "/api/policy",
+    "solo45_payout_api": SOLO45 + "/api/payout",
     "solo45_shares_api": SOLO45 + "/api/shares",
     "rpc_url": "http://127.0.0.1:8332/",
     "rpc_cookie": NODE_DIR + "/.cookie",
@@ -1086,6 +1087,18 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send(404, b"not found", "text/plain")
 
+    def from_proxy(self):
+        """In the Umbrel app, other apps can reach this server directly on the app network, bypassing the
+        Umbrel login, so changes are only accepted from the app's login proxy (SOLO45_PROXY_HOST)."""
+        host = os.environ.get("SOLO45_PROXY_HOST")
+        if not host:
+            return True  # running on its own, outside the Umbrel app
+        try:
+            allowed = {a[4][0] for a in socket.getaddrinfo(host, None)}
+        except OSError:
+            return False
+        return self.client_address[0] in allowed
+
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
@@ -1093,10 +1106,13 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self.send(400, b'{"error":"bad request"}', "application/json")
-        if path in ("/api/solo45/worker", "/api/solo45/settings", "/api/solo45/policy"):
+        if not self.from_proxy():
+            return self.send(403, b'{"error":"changes are only accepted through the Umbrel login"}', "application/json")
+        if path in ("/api/solo45/worker", "/api/solo45/settings", "/api/solo45/policy", "/api/solo45/payout"):
             # per-miner difficulty and pool-wide settings, passed on to the pool (which only accepts them from here)
             try:
-                api = {"worker": "solo45_settings_api", "settings": "solo45_pool_settings_api", "policy": "solo45_policy_api"}
+                api = {"worker": "solo45_settings_api", "settings": "solo45_pool_settings_api", "policy": "solo45_policy_api",
+                       "payout": "solo45_payout_api"}
                 code, reply = post_json(CFG[api[path.rsplit("/", 1)[1]]], data)
             except OSError as e:
                 code, reply = 502, {"error": "Solo45 is not responding: %s" % e}

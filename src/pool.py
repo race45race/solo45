@@ -33,6 +33,7 @@ DIFF1 = 0xFFFF << 208
 VERSION_MASK = 0x1FFFE000
 MAX_DIFF = 1e9  # same ceiling as the per-miner settings
 EN1_SIZE, EN2_SIZE = 4, 8
+CHECK_SPK = b"\x00\x20" + bytes(32)  # stand-in payout script for block checks before a payout address is set
 
 DEFAULTS = {
     "stratum_port": 3333,
@@ -325,6 +326,10 @@ class Worker:
         spk = None if pool.cfg["force_default_address"] else await pool.script_for(address)
         if spk is None:
             address, spk = pool.cfg["default_address"], pool.default_spk
+        if spk is None:
+            log.info("refused %s %s: no payout address yet (set one on the dashboard, or put an address in the miner's username)",
+                     self.ip, self.user)
+            return False, None
         self.address, self.spk = address, spk
         self.name = name or self.ip
         password = str(params[1]) if len(params) > 1 and params[1] else ""
@@ -559,7 +564,7 @@ class Pool:
 
     async def check_proposal(self, job):
         """Have bitcoind validate a complete block built from this job (everything except proof of work)."""
-        spks = {w.spk for w in self.workers if w.spk} | {self.default_spk}
+        spks = ({w.spk for w in self.workers if w.spk} | {self.default_spk}) - {None} or {CHECK_SPK}
         t0 = time.time()
         for spk in spks:
             coinbase = job.coinb1 + bytes(EN1_SIZE + EN2_SIZE) + job.coinb2(spk)
@@ -709,6 +714,7 @@ class Pool:
                 "last_switch": self.last_switch,
                 "proposal": self.proposal,
                 "default_address": self.cfg["default_address"],
+                "needs_setup": self.default_spk is None,
                 "tag": self.cfg["coinbase_tag"],
                 "template_refresh_s": self.refresh_s(),
             },
@@ -808,7 +814,7 @@ class Pool:
                 elif line.lower().startswith(b"x-solo45-token:"):
                     token = line.split(b":", 1)[1].strip().decode(errors="replace")
             status, reply = 200, None
-            if method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy"):
+            if method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy", "/api/payout"):
                 # settings changes are only accepted from the Umbrel itself, or from the dashboard with
                 # the app's shared secret (the Umbrel app runs the dashboard in its own container)
                 secret = os.environ.get("SOLO45_API_TOKEN", "")
@@ -822,6 +828,8 @@ class Pool:
                             status, reply = await self.set_override(data)
                         elif path == "/api/policy":
                             status, reply = await self.set_policy(data)
+                        elif path == "/api/payout":
+                            status, reply = await self.set_payout(data)
                         else:
                             status, reply = self.set_settings(data)
                     except (ValueError, TypeError, AttributeError):
@@ -848,10 +856,32 @@ class Pool:
     async def serve_stratum(self, reader, writer):
         await Worker(self, reader, writer).run()
 
+    async def set_payout(self, data):
+        """The payout address for miners that don't put their own address in the username."""
+        address = str(data.get("address") or "").strip()
+        spk = await self.script_for(address) if address else None
+        if spk is None:
+            return 400, {"error": "your node says that isn't a valid Bitcoin address"}
+        old = self.cfg["default_address"]
+        self.cfg["default_address"], self.default_spk = address, spk
+        self.state["settings"]["default_address"] = address
+        self.save_state()
+        for w in self.workers:  # miners that were paying the old default address switch at the next job
+            if w.authorized and w.address == old:
+                w.address, w.spk = address, spk
+        log.info("payout address set to %s", address)
+        asyncio.get_running_loop().create_task(self.update_template(clean=True))
+        return 200, {"ok": True, "address": address}
+
     async def start(self):
-        self.default_spk = await self.script_for(self.cfg["default_address"])
+        saved = self.state["settings"].get("default_address")
+        if saved:  # set on the dashboard; wins over config.json
+            self.cfg["default_address"] = saved
+        address = self.cfg["default_address"]
+        self.default_spk = await self.script_for(address) if address else None
         if self.default_spk is None:
-            raise SystemExit("default_address in config.json is missing or invalid")
+            log.warning("no payout address set yet: open the Solo45 dashboard to set one. Until then only miners "
+                        "with a Bitcoin address in their username can connect")
         await self.update_template(clean=True)
         await asyncio.start_server(self.serve_stratum, "0.0.0.0", self.cfg["stratum_port"], limit=1 << 16)
         await asyncio.start_server(self.serve_api, "0.0.0.0", self.cfg["api_port"])

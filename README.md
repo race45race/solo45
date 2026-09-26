@@ -10,17 +10,12 @@ A small solo-mining pool and live mining dashboard for your own Bitcoin node, pa
 
 1. In umbrelOS, open the App Store, choose **Community App Stores**, and add `https://github.com/race45race/solo45`.
 2. Install **Solo45** (it needs the Bitcoin app).
-3. Put your payout address in `~/umbrel/app-data/solo45-pool/data/pool/config.json`:
-
-   ```json
-   {"default_address": "bc1q..."}
-   ```
-
+3. Open Solo45 (port 4545) and enter your payout address.
 4. Point your miners at `stratum+tcp://<your-umbrel-ip>:3333`. The username can be `<address>.<worker name>` or just a worker name.
 
 ## Settings
 
-Pool (`data/pool/config.json`) and dashboard (`data/dash/config.json`) settings are optional JSON files. Useful dashboard keys: `miners` (list of miner IPs), `ignore`, `kwh_price`, and `ai.notes` (facts about your setup for the assistant). To use the assistant, put your Anthropic API key in `data/dash/anthropic_key`.
+Everything normal is set on the dashboard: payout address, share difficulty per miner, job update interval, template policy, electricity price, and the AI assistant (your own Anthropic API key, model and spending limits). Advanced options live in `data/pool/config.json` and `data/dash/config.json` (for example `miners`, a list of miner IPs, and `ai.notes`, facts about your setup for the assistant).
 
 ## Run without Docker
 

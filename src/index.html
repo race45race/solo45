@@ -228,6 +228,16 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
 
   <div class="alerts" id="alerts"></div>
 
+  <section class="card setup" id="setupCard" style="display:none;margin-bottom:12px">
+    <h2>Set your payout address</h2>
+    <div class="ai-foot" style="margin:0 0 10px">Solo45 needs a Bitcoin address to pay a block reward to. Until you set one, only miners with their own address in the username can connect.</div>
+    <div class="setting-ctl" style="flex-wrap:wrap">
+      <input type="text" id="setupAddr" placeholder="bc1q…" autocomplete="off" spellcheck="false" style="width:min(460px,100%)">
+      <button class="btn primary" id="setupSave" type="button">Save address</button>
+      <span class="muted" id="setupNote"></span>
+    </div>
+  </section>
+
   <section class="kpis">
     <div class="card kpi">
       <div class="label">Fleet hashrate · 1 min</div>
@@ -306,6 +316,13 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <button class="btn small" id="refreshSave" type="button">Save</button>
       <span class="muted" id="refreshNote"></span>
     </div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="payAddr">Payout address:</label>
+      <input type="text" id="payAddr" autocomplete="off" spellcheck="false" style="width:min(420px,100%)">
+      <button class="btn small" id="paySave" type="button">Save</button>
+      <span class="muted" id="payNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px">Where a found block's reward goes, for miners that don't put their own address in their username. Your node checks the address before it's saved.</div>
     <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes. Datum uses 120.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="kwhPrice">Electricity price:</label>
@@ -748,6 +765,8 @@ let soloSig = "";
 const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
 function renderSolo(s) {
   const so = s.solo45 || {};
+  $("setupCard").style.display = so.needs_setup ? "" : "none";
+  if (so.default_address != null && document.activeElement !== $("payAddr")) $("payAddr").value = so.default_address;
   if (so.template_refresh_s != null && document.activeElement !== $("refreshS")) {
     $("refreshS").value = so.template_refresh_s;
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
@@ -831,6 +850,26 @@ $("refreshSave").addEventListener("click", async () => {
   $("refreshSave").disabled = false;
   $("refreshS").blur();
 });
+
+// ---- payout address
+async function savePayout(input, button, note) {
+  const address = input.value.trim();
+  if (!address) { note.textContent = "Paste your Bitcoin address first."; return; }
+  if (state && state.solo45 && state.solo45.default_address && !confirm("Pay found blocks to " + address + "?")) return;
+  button.disabled = true;
+  note.textContent = "Checking with your node…";
+  try {
+    const r = await fetch("/api/solo45/payout", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({address})});
+    const j = await r.json();
+    note.textContent = r.ok ? "Saved" : "Not saved: " + (j.error || r.status);
+    if (r.ok) input.blur();
+  } catch (e) {
+    note.textContent = "Not saved: " + e.message;
+  }
+  button.disabled = false;
+}
+$("setupSave").addEventListener("click", () => savePayout($("setupAddr"), $("setupSave"), $("setupNote")));
+$("paySave").addEventListener("click", () => savePayout($("payAddr"), $("paySave"), $("payNote")));
 
 // ---- template policy
 const polReason = r => ({inscriptions: "inscriptions", runes: "Runes", opreturn: "OP_RETURN", baremultisig: "bare multisig",
