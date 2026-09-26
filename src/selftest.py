@@ -129,6 +129,8 @@ cases = [
     ("bare multisig", raw_tx([b"\x51\x21" + bytes(33) + b"\x51\xae"]), ["baremultisig"]),
     ("inscription", raw_tx([p2wpkh], [bytes(64), leaf, b"\xc0" + bytes(32)]), ["inscriptions"]),
     ("key-path taproot spend", raw_tx([p2wpkh], [bytes(64)]), []),
+    ("taproot output whose key ends in ae", raw_tx([b"\x51\x20" + bytes(31) + b"\xae"]), []),
+    ("2-of-3 bare multisig", raw_tx([b"\x52" + (b"\x21" + bytes(33)) * 3 + b"\x53\xae"]), ["baremultisig"]),
 ]
 bad = [(name, policy.classify({"data": d, "fee": 10000, "weight": 400}, on)) for name, d, want in cases
        if policy.classify({"data": d, "fee": 10000, "weight": 400}, on) != want]

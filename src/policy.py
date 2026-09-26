@@ -135,7 +135,14 @@ def has_envelope(script):
 
 
 def is_bare_multisig(spk):
-    return len(spk) >= 3 and spk[-1] == OP_CHECKMULTISIG and 0x51 <= spk[0] <= 0x60
+    """OP_m <pubkey>... OP_n OP_CHECKMULTISIG, read opcode by opcode (a taproot output also starts
+    with OP_1, and its 32-byte key can end in the byte 0xae)."""
+    ops = list(script_ops(spk))
+    if len(ops) < 4 or ops[-1] != (OP_CHECKMULTISIG, None):
+        return False
+    (m, _), (n, _), keys = ops[0], ops[-2], ops[1:-2]
+    return (0x51 <= m <= 0x60 and 0x51 <= n <= 0x60 and len(keys) == n - 0x50
+            and all(data is not None and len(data) in (33, 65) for _, data in keys))
 
 
 def classify(tx, rules):
