@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.5"
+version: "0.1.6"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -14,16 +14,7 @@ description: >-
 
   The dashboard shows each miner's hashrate, temperatures and best shares, how fast your miners switch to each new block, and your odds. It supports Bitaxe (AxeOS) and Braiins OS miners. An optional AI assistant can explain what it sees if you add your own Anthropic API key.
 releaseNotes: >-
-  - The dashboard moved to port 4545 (port 8099 belongs to another app in the Umbrel App Store). Update your bookmarks.
-
-
-  - Set your payout address on the dashboard; no need to edit files.
-
-
-  - Dashboard settings can only be changed through the Umbrel login.
-
-
-  - New Solo45 icon.
+  The dashboard is now called Solo45 and shows the new Solo45 logo.
 
 developer: race45race
 website: https://github.com/race45race/solo45
