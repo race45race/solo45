@@ -26,6 +26,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 import policy
+import stallguard
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("SOLO45_DATA_DIR") or HERE  # config.json, state.json and logs
@@ -50,6 +51,7 @@ DEFAULTS = {
     "share_seconds": 5,  # vardiff aims for one share per miner every N seconds
     "block_poll_ms": 100,
     "template_refresh_s": 30,
+    "stall_guard_s": 60,  # disconnect a peer that holds up a new block this long (0 = off)
 }
 
 log = logging.getLogger("pool")
@@ -503,6 +505,7 @@ class Pool:
         self.policy_cfg = policy.load_config(self.state.get("policy"))
         self.policy_heights = collections.OrderedDict()  # height -> what the policy did to its last job
         self.policy_fallback_height = None  # a filtered job failed the block check at this height
+        self.guard = stallguard.StallGuard(self.state.setdefault("stall_events", []))
         self.last_proposal = 0.0
 
     def refresh_s(self):
@@ -645,6 +648,37 @@ class Pool:
                 await asyncio.sleep(2)
             await asyncio.sleep(self.cfg["block_poll_ms"] / 1000)
 
+    def stall_guard_s(self):
+        return self.state["settings"].get("stall_guard_s", self.cfg["stall_guard_s"])
+
+    async def stall_guard_loop(self):
+        """Every 5 s: is the node stuck on a block one peer won't send? Then drop that peer."""
+        while True:
+            await asyncio.sleep(5)
+            limit = self.stall_guard_s()
+            if limit <= 0:
+                continue
+            try:
+                info = await self.call("getblockchaininfo", timeout=10)
+                behind = info["headers"] > info["blocks"]
+                peers = await self.call("getpeerinfo", timeout=10) if behind else []
+                targets, note = self.guard.check(info["blocks"], info["headers"], info["initialblockdownload"],
+                                                 peers, time.time(), limit)
+                if note:
+                    log.warning("stall guard: %s", note)
+                for pid, desc in targets:
+                    try:
+                        await self.call("disconnectnode", "", pid, timeout=10)
+                        log.warning("stall guard: block %d was announced over %d s ago but %s still hasn't sent it; "
+                                    "disconnected it so the node gets the block from another peer",
+                                    info["blocks"] + 1, limit, desc)
+                    except RPCError as e:
+                        log.warning("stall guard: couldn't disconnect %s: %s", desc, e)
+                if targets:
+                    self.save_state()
+            except Exception as e:
+                log.warning("stall guard: %s", e)
+
     async def refresh_templates(self):
         while True:
             await asyncio.sleep(1)
@@ -717,6 +751,7 @@ class Pool:
                 "needs_setup": self.default_spk is None,
                 "tag": self.cfg["coinbase_tag"],
                 "template_refresh_s": self.refresh_s(),
+                "stall_guard": {"seconds": self.stall_guard_s(), "events": self.guard.events[-10:]},
             },
             "workers": sorted((w.snapshot(now) for w in self.workers), key=lambda w: w["name"]),
         }
@@ -792,14 +827,23 @@ class Pool:
         return 200, dict(self.policy_view(), ok=True)
 
     def set_settings(self, data):
-        """Pool-wide settings from the dashboard. Takes effect at the next refresh, no restart."""
-        secs = float(data["template_refresh_s"])
-        if not 1 <= secs <= 120:
-            return 400, {"error": "the job update interval must be between 1 and 120 seconds"}
-        self.state["settings"]["template_refresh_s"] = secs
+        """Pool-wide settings from the dashboard. Takes effect right away, no restart."""
+        if "template_refresh_s" not in data and "stall_guard_s" not in data:
+            return 400, {"error": "nothing to change"}
+        if "template_refresh_s" in data:
+            secs = float(data["template_refresh_s"])
+            if not 1 <= secs <= 120:
+                return 400, {"error": "the job update interval must be between 1 and 120 seconds"}
+            self.state["settings"]["template_refresh_s"] = secs
+            log.info("job update interval set to %g s", secs)
+        if "stall_guard_s" in data:
+            guard = float(data["stall_guard_s"])
+            if guard != 0 and not 20 <= guard <= 600:
+                return 400, {"error": "the stall guard must be 20 to 600 seconds, or 0 for off"}
+            self.state["settings"]["stall_guard_s"] = guard
+            log.info("stall guard %s", "off" if guard == 0 else "set to %g s" % guard)
         self.save_state()
-        log.info("job update interval set to %g s", secs)
-        return 200, {"ok": True, "template_refresh_s": secs}
+        return 200, {"ok": True, "template_refresh_s": self.refresh_s(), "stall_guard_s": self.stall_guard_s()}
 
     async def serve_api(self, reader, writer):
         try:
@@ -886,7 +930,8 @@ class Pool:
         await asyncio.start_server(self.serve_stratum, "0.0.0.0", self.cfg["stratum_port"], limit=1 << 16)
         await asyncio.start_server(self.serve_api, "0.0.0.0", self.cfg["api_port"])
         loop = asyncio.get_running_loop()
-        self.tasks = [loop.create_task(c) for c in (self.watch_blocks(), self.refresh_templates(), self.housekeeping())]
+        self.tasks = [loop.create_task(c) for c in (self.watch_blocks(), self.refresh_templates(), self.housekeeping(),
+                                                     self.stall_guard_loop())]
         log.info("stratum on :%d, api on :%d, height %d, pays %s by default",
                  self.cfg["stratum_port"], self.cfg["api_port"], self.job.height, self.cfg["default_address"])
 

@@ -318,6 +318,13 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <span class="muted" id="refreshNote"></span>
     </div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="guardS">Stall guard:</label>
+      <input type="number" id="guardS" min="0" max="600" step="5" style="width:70px"> <span>seconds (0 = off)</span>
+      <button class="btn small" id="guardSave" type="button">Save</button>
+      <span class="muted" id="guardNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px" id="guardFoot">If your node has seen a new block announced but one peer still hasn't sent it after this long, Solo45 disconnects that peer so the node gets the block elsewhere. Bitcoin Core on its own waits 10 minutes, which your miners would spend on an old block.</div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="payAddr">Payout address:</label>
       <input type="text" id="payAddr" autocomplete="off" spellcheck="false" style="width:min(420px,100%)">
       <button class="btn small" id="paySave" type="button">Save</button>
@@ -767,6 +774,16 @@ const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o
 function renderSolo(s) {
   const so = s.solo45 || {};
   $("setupCard").style.display = so.needs_setup ? "" : "none";
+  const sg = so.stall_guard;
+  if (sg) {
+    if (document.activeElement !== $("guardS")) $("guardS").value = sg.seconds;
+    const ev = sg.events || [];
+    $("guardNote").textContent = sg.seconds > 0 ? (ev.length ? `stepped in ${ev.length} time${ev.length > 1 ? "s" : ""}` : "hasn't needed to step in") : "off";
+    if (ev.length) {
+      const e = ev[ev.length - 1];
+      $("guardNote").textContent += ` · last: ${new Date(e.at * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"})}, block ${e.height.toLocaleString()} after ${e.waited_s} s`;
+    }
+  }
   if (so.default_address != null && document.activeElement !== $("payAddr")) $("payAddr").value = so.default_address;
   if (so.template_refresh_s != null && document.activeElement !== $("refreshS")) {
     $("refreshS").value = so.template_refresh_s;
@@ -870,6 +887,20 @@ async function savePayout(input, button, note) {
   button.disabled = false;
 }
 $("setupSave").addEventListener("click", () => savePayout($("setupAddr"), $("setupSave"), $("setupNote")));
+$("guardSave").addEventListener("click", async () => {
+  const v = parseFloat($("guardS").value);
+  if (!(v === 0 || (v >= 20 && v <= 600))) { $("guardNote").textContent = "Pick 20 to 600 seconds, or 0 for off."; return; }
+  $("guardSave").disabled = true;
+  try {
+    const r = await fetch("/api/solo45/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({stall_guard_s: v})});
+    const j = await r.json();
+    $("guardNote").textContent = r.ok ? (j.stall_guard_s ? `Saved: ${j.stall_guard_s} s` : "Saved: off") : `Not saved: ${j.error || r.status}`;
+  } catch (e) {
+    $("guardNote").textContent = "Not saved: " + e.message;
+  }
+  $("guardSave").disabled = false;
+  $("guardS").blur();
+});
 $("paySave").addEventListener("click", () => savePayout($("payAddr"), $("paySave"), $("payNote")));
 
 // ---- template policy

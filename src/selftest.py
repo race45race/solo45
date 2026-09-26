@@ -155,6 +155,28 @@ check("node accepts a filtered block proposal", fres is None,
       "(%d of %d txs removed, result %r)" % (len(drop), len(tpl["transactions"]), fres))
 
 
+# 4c. stall guard decisions, on made-up node states
+import stallguard
+g = stallguard.StallGuard([])
+stuck = [{"id": 21, "network": "ipv4", "inbound": True, "inflight": [101]}, {"id": 5, "network": "ipv4", "inflight": []}]
+steps = [
+    ("in sync: nothing", g.check(100, 100, False, stuck, 0, 60)[0] == []),
+    ("behind 30 s: still waiting", g.check(100, 101, False, stuck, 1000, 60)[0] == [] and g.check(100, 101, False, stuck, 1030, 60)[0] == []),
+    ("behind 60 s: drops the peer holding the block", [p for p, _ in g.check(100, 101, False, stuck, 1061, 60)[0]] == [21]),
+    ("cooldown: no second round within 30 s", g.check(100, 101, False, stuck, 1070, 60)[0] == []),
+    ("far behind (catching up): stays out", stallguard.StallGuard([]).check(100, 110, False, stuck, 5000, 60)[0] == []),
+    ("initial sync: stays out", stallguard.StallGuard([]).check(100, 101, True, stuck, 5000, 60)[0] == []),
+    ("switched off: stays out", stallguard.StallGuard([]).check(100, 101, False, stuck, 5000, 0)[0] == []),
+]
+g2 = stallguard.StallGuard([])
+g2.check(100, 101, False, [], 0, 60)
+first = g2.check(100, 101, False, [], 61, 60)
+steps.append(("no peer has the block: only a note, once", first[0] == [] and first[1] is not None
+              and g2.check(100, 101, False, [], 70, 60) == ([], None)))
+bad = [name for name, ok in steps if not ok]
+check("stall guard decisions", not bad and len(g.events) == 1, "(%d cases%s)" % (len(steps), ", wrong: %r" % bad if bad else ""))
+
+
 # 5. stratum round trip with an independently written miner
 def miner_header(notify, en1, en2, ntime, nonce, version):
     jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify
