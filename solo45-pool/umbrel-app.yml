@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.3"
+version: "0.1.4"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -14,13 +14,10 @@ description: >-
 
   The dashboard shows each miner's hashrate, temperatures and best shares, how fast your miners switch to each new block, and your odds. It supports Bitaxe (AxeOS) and Braiins OS miners. An optional AI assistant can explain what it sees if you add your own Anthropic API key.
 releaseNotes: >-
-  - Set your electricity price and currency on the dashboard.
+  - Template policy: choose which kinds of transactions go into the blocks Solo45 builds (inscriptions, Runes, large OP_RETURN data, bare multisig, low fee rate). It starts in watch-only mode, which only counts what would be skipped; switch it to Filter on the dashboard when you're ready. Every filtered job is still checked by your node.
 
 
-  - AI settings on the dashboard: add your own Anthropic API key, pick a model from cheapest to most capable, set weekly and monthly spending limits, and choose how often reports are written.
-
-
-  - A more detailed Solo45 log: every job update, block checks, a stats line every 5 minutes, difficulty changes and rejected shares.
+  - Click the price per kWh under the power figure to jump to the electricity price setting.
 
 developer: race45race
 website: https://github.com/race45race/solo45
