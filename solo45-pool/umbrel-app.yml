@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.7"
+version: "0.1.8"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -14,10 +14,7 @@ description: >-
 
   The dashboard shows each miner's hashrate, temperatures and best shares, how fast your miners switch to each new block, and your odds. It supports Bitaxe (AxeOS) and Braiins OS miners. An optional AI assistant can explain what it sees if you add your own Anthropic API key.
 releaseNotes: >-
-  - Fixed the template policy's bare multisig rule, which could mistake about 1 in 256 taproot payments for bare multisig and leave them out.
-
-
-  - A simpler, easier to read 45 logo in the dashboard header and browser tab.
+  Stall guard: if your node has seen a new block announced but one peer still hasn't sent it after 60 seconds, Solo45 disconnects that peer so the node gets the block elsewhere, instead of waiting Bitcoin Core's 10 minutes while your miners work on an old block. Adjustable (or off) in Solo45 settings.
 
 developer: race45race
 website: https://github.com/race45race/solo45
