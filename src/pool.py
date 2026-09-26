@@ -25,6 +25,8 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
+import policy
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("SOLO45_DATA_DIR") or HERE  # config.json, state.json and logs
 DIFF1 = 0xFFFF << 208
@@ -493,6 +495,9 @@ class Pool:
         self.state.setdefault("accepted_total", 0)
         self.state.setdefault("overrides", {})
         self.state.setdefault("settings", {})  # changed from the dashboard, kept across restarts
+        self.policy_cfg = policy.load_config(self.state.get("policy"))
+        self.policy_heights = collections.OrderedDict()  # height -> what the policy did to its last job
+        self.policy_fallback_height = None  # a filtered job failed the block check at this height
         self.last_proposal = 0.0
 
     def refresh_s(self):
@@ -522,7 +527,13 @@ class Pool:
             t0 = time.time()
             tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
             new_block = tpl["previousblockhash"] != self.tip
+            mode, report, filtered = self.policy_cfg["mode"], None, False
+            if mode == "filter":
+                report = policy.evaluate(tpl, self.policy_cfg)
+                if report["skipped"] and self.policy_fallback_height != tpl["height"]:
+                    tpl, filtered = policy.apply(tpl, report), True
             job = Job("%x" % next(self.job_ids), tpl, self.tag)
+            job.filtered = filtered
             self.jobs[job.id] = job
             while len(self.jobs) > 40:
                 self.jobs.popitem(last=False)
@@ -536,6 +547,10 @@ class Pool:
             log.info("%s job %s for block %d: %.8f BTC, %d txs, %s bytes, fees %.4f BTC (sent to %d workers in %d ms)",
                      "new-block" if new_block else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
                      "{:,}".format(sum(len(t) for t in job.tx_data)), job.fees / 1e8, len(workers), ms)
+            if mode == "watch":  # only counting, so it runs after the miners already have the job
+                report = policy.evaluate(tpl, self.policy_cfg)
+            if report is not None:
+                self.record_policy(report, mode, filtered)
         # the node fully checks every new block's work; routine refreshes at most every 10 s,
         # so a short refresh interval doesn't keep the node busy validating
         if new_block or time.time() - self.last_proposal >= 10:
@@ -556,6 +571,11 @@ class Pool:
             if res == "inconclusive-not-best-prevblk":
                 return  # a newer block arrived meanwhile; the next job gets checked
             ok = res is None
+            if not ok and getattr(job, "filtered", False):
+                log.error("the filtered template for block %d failed the block check (%s); mining the node's own "
+                          "template for this block instead", job.height, res)
+                self.policy_fallback_height = job.height
+                asyncio.get_running_loop().create_task(self.update_template(clean=True))
             if ok:
                 log.info("block check OK for %d (job %s, %d txs) in %d ms",
                          job.height, job.id, len(job.tx_data), (time.time() - t0) * 1000)
@@ -683,6 +703,7 @@ class Pool:
                 "accepted": self.accepted,
                 "rejected": dict(self.rejected),
                 "best": self.best,
+                "policy": self.policy_view(),
                 "best_ever": self.state["best_ever"],
                 "blocks": self.state["blocks"],
                 "last_switch": self.last_switch,
@@ -722,6 +743,48 @@ class Pool:
         log.info("settings for %s: %s", name, override or "automatic")
         return 200, {"ok": True, "name": name, "override": override}
 
+    def record_policy(self, report, mode, filtered):
+        entry = {"height": report["height"], "mode": mode, "filtered": filtered, "txs": report["txs"],
+                 "skipped": report["skipped"], "fees": report["fees"], "fees_skipped": report["fees_skipped"],
+                 "weight_skipped": report["weight_skipped"], "by_rule": report["by_rule"],
+                 "examples": report["examples"], "at": time.time()}
+        self.policy_heights[report["height"]] = entry
+        self.policy_heights.move_to_end(report["height"])
+        while len(self.policy_heights) > 144:  # about a day of blocks
+            self.policy_heights.popitem(last=False)
+        if report["skipped"]:
+            log.info("policy (%s): %s %d of %d txs for block %d, %s sats in fees (%s)",
+                     "filtering" if filtered else "watch-only" if mode == "watch" else "fallback",
+                     "skipped" if filtered else "would skip", report["skipped"], report["txs"], report["height"],
+                     "{:,}".format(report["fees_skipped"]),
+                     ", ".join("%s %d" % (k, v["txs"]) for k, v in report["by_rule"].items()))
+
+    def policy_view(self):
+        recent = list(self.policy_heights.values())
+        done = recent[:-1]  # blocks already found by the network; the last one is still being mined
+        totals = {"blocks": len(done), "skipped": sum(e["skipped"] for e in done),
+                  "fees_skipped": sum(e["fees_skipped"] for e in done), "by_rule": {}}
+        for e in done:
+            for k, v in e["by_rule"].items():
+                t = totals["by_rule"].setdefault(k, {"txs": 0, "fees": 0})
+                t["txs"] += v["txs"]
+                t["fees"] += v["fees"]
+        return {"mode": self.policy_cfg["mode"], "rules": self.policy_cfg["rules"], "names": policy.RULE_NAMES,
+                "current": recent[-1] if recent else None, "recent": done[-12:][::-1], "totals": totals,
+                "fallback_height": self.policy_fallback_height}
+
+    async def set_policy(self, data):
+        cfg, err = policy.check_config(data, self.policy_cfg)
+        if err:
+            return 400, {"error": err}
+        self.policy_cfg = cfg
+        self.state["policy"] = cfg
+        self.save_state()
+        log.info("template policy: mode %s, rules on: %s", cfg["mode"],
+                 ", ".join(k for k, v in cfg["rules"].items() if v.get("on")) or "none")
+        asyncio.get_running_loop().create_task(self.update_template())  # apply it to the next job right away
+        return 200, dict(self.policy_view(), ok=True)
+
     def set_settings(self, data):
         """Pool-wide settings from the dashboard. Takes effect at the next refresh, no restart."""
         secs = float(data["template_refresh_s"])
@@ -745,7 +808,7 @@ class Pool:
                 elif line.lower().startswith(b"x-solo45-token:"):
                     token = line.split(b":", 1)[1].strip().decode(errors="replace")
             status, reply = 200, None
-            if method == "POST" and path in ("/api/worker", "/api/settings"):
+            if method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy"):
                 # settings changes are only accepted from the Umbrel itself, or from the dashboard with
                 # the app's shared secret (the Umbrel app runs the dashboard in its own container)
                 secret = os.environ.get("SOLO45_API_TOKEN", "")
@@ -757,6 +820,8 @@ class Pool:
                         data = json.loads(await asyncio.wait_for(reader.readexactly(min(length, 4096)), 5))
                         if path == "/api/worker":
                             status, reply = await self.set_override(data)
+                        elif path == "/api/policy":
+                            status, reply = await self.set_policy(data)
                         else:
                             status, reply = self.set_settings(data)
                     except (ValueError, TypeError, AttributeError):

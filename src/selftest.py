@@ -106,6 +106,53 @@ for n_tx in (0, 1, 2, 3):  # small blocks exercise odd/even merkle edge cases
     check("proposal with %d txs" % n_tx, r is None, "(result %r)" % r)
 
 
+# 4b. template policy: detection on hand-made transactions, and a filtered template the node accepts
+import policy
+
+
+def raw_tx(outputs, witness=None):
+    tx = struct.pack("<I", 2) + (b"\x00\x01" if witness else b"") + b"\x01" + bytes(36) + b"\x00" + b"\xff" * 4
+    tx += bytes([len(outputs)]) + b"".join(struct.pack("<q", 1000) + bytes([len(s)]) + s for s in outputs)
+    if witness:
+        tx += bytes([len(witness)]) + b"".join(bytes([len(w)]) + w for w in witness)
+    return (tx + bytes(4)).hex()
+
+
+on = policy.load_config({"rules": {"minfee": {"on": True, "sat_vb": 2}}})["rules"]
+p2wpkh = b"\x00\x14" + bytes(20)
+leaf = bytes([0x20]) + bytes(32) + b"\xac" + b"\x00\x63" + b"\x03ord" + b"\x51" + b"\x05hello" + b"\x68"
+cases = [
+    ("plain payment", raw_tx([p2wpkh]), []),
+    ("small OP_RETURN (80 bytes)", raw_tx([p2wpkh, b"\x6a\x4c\x4e" + bytes(78)]), []),
+    ("large OP_RETURN (100 bytes)", raw_tx([b"\x6a\x4c\x62" + bytes(98)]), ["opreturn"]),
+    ("Runes", raw_tx([p2wpkh, b"\x6a\x5d\x03\x14\x02\x00"]), ["runes"]),
+    ("bare multisig", raw_tx([b"\x51\x21" + bytes(33) + b"\x51\xae"]), ["baremultisig"]),
+    ("inscription", raw_tx([p2wpkh], [bytes(64), leaf, b"\xc0" + bytes(32)]), ["inscriptions"]),
+    ("key-path taproot spend", raw_tx([p2wpkh], [bytes(64)]), []),
+]
+bad = [(name, policy.classify({"data": d, "fee": 10000, "weight": 400}, on)) for name, d, want in cases
+       if policy.classify({"data": d, "fee": 10000, "weight": 400}, on) != want]
+check("policy spots each kind of transaction", not bad, "(%d cases%s)" % (len(cases), ", wrong: %r" % bad if bad else ""))
+check("policy minimum fee rate", policy.classify({"data": raw_tx([p2wpkh]), "fee": 100, "weight": 400}, on) == ["minfee"])
+check("policy witness commitment matches the node's", policy.witness_commitment(tpl["transactions"]).hex()
+      == tpl.get("default_witness_commitment"), "(%d txs)" % len(tpl["transactions"]))
+fake = {"height": 1, "transactions": [
+    {"data": raw_tx([b"\x6a\x5d\x00"]), "txid": "a", "fee": 5, "weight": 400, "depends": []},
+    {"data": raw_tx([p2wpkh]), "txid": "b", "fee": 7, "weight": 400, "depends": [1]},
+    {"data": raw_tx([p2wpkh]), "txid": "c", "fee": 9, "weight": 400, "depends": []}]}
+rep = policy.evaluate(fake, policy.load_config({}))
+check("policy also skips children of skipped transactions", sorted(rep["skip"]) == [0, 1] and rep["fees_skipped"] == 12)
+# the node must accept a block built from a filtered template (up to 3 transactions taken out)
+free = [n for n, t in enumerate(tpl["transactions"]) if not any(d - 1 == n for u in tpl["transactions"] for d in u.get("depends", []))]
+drop = {n: ["runes"] for n in free[:3]}
+ftpl = policy.apply(tpl, {"skip": drop, "fees_skipped": sum(tpl["transactions"][n]["fee"] for n in drop)})
+fjob = P.Job("f", ftpl, cfg["coinbase_tag"].encode())
+fcb = fjob.coinb1 + bytes(12) + fjob.coinb2(spk)
+fres = rpc.call("getblocktemplate", {"mode": "proposal", "data": fjob.block(fjob.header(fcb, fjob.version, fjob.curtime, 0), fcb).hex()})
+check("node accepts a filtered block proposal", fres is None,
+      "(%d of %d txs removed, result %r)" % (len(drop), len(tpl["transactions"]), fres))
+
+
 # 5. stratum round trip with an independently written miner
 def miner_header(notify, en1, en2, ntime, nonce, version):
     jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify

@@ -47,6 +47,7 @@ CFG = {
     "solo45_api": SOLO45 + "/api",
     "solo45_settings_api": SOLO45 + "/api/worker",
     "solo45_pool_settings_api": SOLO45 + "/api/settings",
+    "solo45_policy_api": SOLO45 + "/api/policy",
     "solo45_shares_api": SOLO45 + "/api/shares",
     "rpc_url": "http://127.0.0.1:8332/",
     "rpc_cookie": NODE_DIR + "/.cookie",
@@ -1092,10 +1093,11 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self.send(400, b'{"error":"bad request"}', "application/json")
-        if path in ("/api/solo45/worker", "/api/solo45/settings"):
+        if path in ("/api/solo45/worker", "/api/solo45/settings", "/api/solo45/policy"):
             # per-miner difficulty and pool-wide settings, passed on to the pool (which only accepts them from here)
             try:
-                code, reply = post_json(CFG["solo45_settings_api" if path.endswith("worker") else "solo45_pool_settings_api"], data)
+                api = {"worker": "solo45_settings_api", "settings": "solo45_pool_settings_api", "policy": "solo45_policy_api"}
+                code, reply = post_json(CFG[api[path.rsplit("/", 1)[1]]], data)
             except OSError as e:
                 code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
             return self.send(code, json.dumps(reply).encode(), "application/json")
