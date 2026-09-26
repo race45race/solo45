@@ -16,7 +16,7 @@ A small solo-mining pool and live mining dashboard for your own Bitcoin node, pa
    {"default_address": "bc1q..."}
    ```
 
-4. Point your miners at `stratum+tcp://<your-umbrel-ip>:3334`. The username can be `<address>.<worker name>` or just a worker name.
+4. Point your miners at `stratum+tcp://<your-umbrel-ip>:3333`. The username can be `<address>.<worker name>` or just a worker name.
 
 ## Settings
 

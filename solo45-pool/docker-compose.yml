@@ -13,7 +13,7 @@ services:
     stop_grace_period: 10s
     command: ["python", "/app/pool.py"]
     ports:
-      - "3334:3333"             # stratum for miners
+      - "3333:3333"             # stratum for miners
       - "127.0.0.1:3381:3380"   # pool API, for health checks on the Umbrel itself
     volumes:
       - ${APP_DATA_DIR}/data/pool:/data/pool
