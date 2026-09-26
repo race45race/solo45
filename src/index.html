@@ -122,6 +122,8 @@ td.first, th.first { padding-left: 0; }
 .group-row td .muted { font-weight: 400; }
 
 .blocks td { font-size: 12.5px; }
+.kwh-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
+.kwh-link:hover { text-decoration-style: solid; }
 
 button.btn { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; cursor: pointer;
   border: 1px solid var(--line); background: var(--panel-2); color: var(--text); }
@@ -506,7 +508,7 @@ function render(s) {
   $("kPower").innerHTML = T.power ? (T.power >= 1000 ? (T.power / 1000).toFixed(2) + "<small>kW</small>" : Math.round(T.power) + "<small>W</small>") : "—";
   $("kEff").innerHTML = (T.j_per_th ? `<span class="num">${T.j_per_th.toFixed(1)} J/TH</span>` : "")
     + (T.cost_day ? `<span class="num">${esc(cur())}${T.cost_day.toFixed(2)}/day · ${esc(cur())}${(T.cost_day * 30.4).toFixed(0)}/mo</span>` : "")
-    + `<span>ASIC-reported, not wall power${T.kwh_price ? " · " + esc(cur()) + T.kwh_price + "/kWh" : ""}</span>`;
+    + `<span>ASIC-reported, not wall power · <a href="#kwhPrice" class="kwh-link" title="Change your electricity price">${T.kwh_price ? esc(cur()) + T.kwh_price + "/kWh" : "set electricity price"}</a></span>`;
   if (document.activeElement !== $("kwhPrice") && document.activeElement !== $("kwhCur")) {
     $("kwhPrice").value = T.kwh_price ?? "";
     $("kwhCur").value = cur();
@@ -753,6 +755,14 @@ async function saveSetting(name, body, note) {
     return false;
   }
 }
+
+// the $/kWh under the power figure is a shortcut to the electricity price setting
+$("kEff").addEventListener("click", e => {
+  if (!e.target.closest(".kwh-link")) return;
+  e.preventDefault();
+  $("kwhPrice").scrollIntoView({behavior: "smooth", block: "center"});
+  setTimeout(() => { $("kwhPrice").focus(); $("kwhPrice").select(); }, 450);
+});
 
 $("kwhSave").addEventListener("click", async () => {
   const price = parseFloat($("kwhPrice").value), currency = $("kwhCur").value.trim() || "$";
