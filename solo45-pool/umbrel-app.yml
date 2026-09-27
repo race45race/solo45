@@ -6,19 +6,19 @@ version: "0.1.12"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
-  ⚙️ **Setup:** open Solo45 after installing and enter your payout address. Then point your miners at your Umbrel's IP address on port 3333 (stratum+tcp://umbrel.local:3333). Any Stratum v1 miner works.
+  ⚙️ Setup: open Solo45 after installing and enter your payout address. Then point your miners at your Umbrel's IP address on port 3333, for example stratum+tcp://192.168.1.50:3333 (use the IP: many miners can't look up umbrel.local). Any Stratum v1 miner works.
 
 
-  Solo45 is a small solo-mining pool that builds work from your own Bitcoin node and pays any block you find straight to your address. Every new job is checked by your node (getblocktemplate "proposal" mode), so a malformed block would show up within seconds instead of on the day you find one.
+  Solo45 is a small solo-mining pool that builds work from your own Bitcoin node and pays any block you find straight to your address, with no pool fee. Every new job is checked by your node (getblocktemplate "proposal" mode), so a malformed block would show up within seconds instead of on the day you find one.
 
 
-  - **Template policy:** choose which transactions go into your blocks (inscriptions, Runes, large OP_RETURN data, bare multisig, low fee rates), with a watch-only mode to see what would be skipped first.
+  • Template policy: choose which kinds of transactions to leave out of your blocks (inscriptions, Runes, large OP_RETURN data, bare multisig, low fee rates). Each rule can be Off, Watch (only count what it would skip) or Filter, and the fee rule treats child-pays-for-parent packages the way your node does.
 
-  - **Stall guard:** if a peer holds up a new block, Solo45 disconnects it after 60 seconds, so your miners don't spend 10 minutes on an old block.
+  • Stall guard: if a peer holds up a new block, Solo45 disconnects it after 60 seconds (adjustable), so your miners don't spend 10 minutes on an old block.
 
-  - **Live dashboard:** hashrate, temperatures, best shares, how fast your miners switch to each new block, electricity cost and your odds, for Bitaxe (AxeOS) and Braiins OS miners.
+  • Live dashboard: hashrate, temperatures, best shares, how fast your miners switch to each new block, electricity cost and your odds, for Bitaxe (AxeOS) and Braiins OS miners.
 
-  - **Optional AI assistant** using your own Anthropic API key, with weekly and monthly spending limits.
+  • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
   Template policy: each rule can now be set to Off, Watch (only count what it would skip) or Filter, so you can see what a rule would cost before using it. The minimum fee rule now judges transaction packages the way your node does, so a low-fee parent stays in when its child pays enough for both. Also, a miner's difficulty is only remembered while it is sending shares.
 
