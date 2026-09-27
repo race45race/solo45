@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.8"
+version: "0.1.9"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   - **Optional AI assistant** using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Stall guard: if your node has seen a new block announced but one peer still hasn't sent it after 60 seconds, Solo45 disconnects that peer so the node gets the block elsewhere, instead of waiting Bitcoin Core's 10 minutes while your miners work on an old block. Adjustable (or off) in Solo45 settings.
+  Fixed: settings changed on the dashboard (share difficulty, job update interval, stall guard, template policy, payout address, electricity price and AI settings) were refused since 0.1.5 on umbrelOS versions without a separate login proxy. The stall guard also stays quiet while the node is starting up.
 
 developer: race45race
 website: https://github.com/race45race/solo45
