@@ -239,6 +239,7 @@ class Worker:
         self.ip = peer[0]
         self.en1 = pool.next_extranonce1()
         self.diff = pool.cfg["start_diff"]
+        self.remembered = False  # started at the difficulty remembered from its last connection
         self.job_diff = {}
         self.subscribed = self.authorized = False
         self.user = self.name = self.address = self.agent = ""
@@ -310,7 +311,8 @@ class Worker:
         if method == "mining.authorize":
             return await self.authorize(params)
         if method == "mining.suggest_difficulty":
-            if not self.override().get("diff"):  # a fixed difficulty set by the user wins
+            # a fixed difficulty set by the user wins, and so does the difficulty we remembered for this miner
+            if not self.override().get("diff") and not self.remembered:
                 self.set_diff(float(params[0]))
             return True, (self.send_difficulty if self.authorized else None)
         if method == "mining.submit":
@@ -334,6 +336,10 @@ class Worker:
             return False, None
         self.address, self.spk = address, spk
         self.name = name or self.ip
+        remembered = pool.remembered_diff(self.name)
+        if remembered:  # start where this miner left off, instead of the starting difficulty
+            self.set_diff(remembered)
+            self.remembered = True
         password = str(params[1]) if len(params) > 1 and params[1] else ""
         for part in password.split(","):
             if part.strip().startswith("d="):
@@ -711,9 +717,23 @@ class Pool:
                         pass
             n += 1
             if n % 4 == 0:
+                self.remember_diffs(now)
                 self.save_state()
             if n % 20 == 0:  # every 5 minutes
                 self.log_stats(now)
+
+    def remember_diffs(self, now):
+        """Keep each settled miner's automatic difficulty, so it starts there after a restart or update."""
+        memory = self.state.setdefault("last_diff", {})
+        for w in self.workers:
+            if w.authorized and not w.override().get("diff") and now - w.connected > 180:
+                memory[w.name] = [w.diff, now]
+
+    def remembered_diff(self, name):
+        entry = self.state.setdefault("last_diff", {}).get(name)
+        if entry and time.time() - entry[1] < 7 * 86400:
+            return entry[0]
+        return None
 
     def log_stats(self, now):
         accepted = self.accepted - self.stats_mark[0]

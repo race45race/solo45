@@ -177,6 +177,13 @@ bad = [name for name, ok in steps if not ok]
 check("stall guard decisions", not bad and len(g.events) == 1, "(%d cases%s)" % (len(steps), ", wrong: %r" % bad if bad else ""))
 
 
+# 4d. remembered difficulty
+import types
+_m = types.SimpleNamespace(state={"last_diff": {"A": [3000.0, time.time()], "B": [5000.0, time.time() - 8 * 86400]}})
+check("remembered difficulty (fresh used, 8-day-old ignored)", P.Pool.remembered_diff(_m, "A") == 3000.0
+      and P.Pool.remembered_diff(_m, "B") is None and P.Pool.remembered_diff(_m, "C") is None)
+
+
 # 5. stratum round trip with an independently written miner
 def miner_header(notify, en1, en2, ntime, nonce, version):
     jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify
