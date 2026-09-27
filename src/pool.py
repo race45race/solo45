@@ -676,6 +676,9 @@ class Pool:
                         log.warning("stall guard: couldn't disconnect %s: %s", desc, e)
                 if targets:
                     self.save_state()
+            except RPCError as e:
+                if not (isinstance(e.args[0], dict) and e.args[0].get("code") == -28):  # -28: node still starting up
+                    log.warning("stall guard: %s", e)
             except Exception as e:
                 log.warning("stall guard: %s", e)
 

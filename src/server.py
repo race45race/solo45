@@ -934,6 +934,19 @@ def save_ai_settings(data):
     return 200, dict(assistant.status(), ok=True)
 
 
+def default_gateway(route_file="/proc/net/route"):
+    """The IPv4 default gateway, which inside an app container is the Umbrel host itself."""
+    try:
+        with open(route_file) as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) > 2 and parts[1] == "00000000":
+                    return socket.inet_ntoa(bytes.fromhex(parts[2])[::-1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def post_json(url, data, timeout=5):
     headers = {"Content-Type": "application/json"}
     if os.environ.get("SOLO45_API_TOKEN"):  # the Umbrel app's shared secret for changing Solo45 settings
@@ -1089,15 +1102,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def from_proxy(self):
         """In the Umbrel app, other apps can reach this server directly on the app network, bypassing the
-        Umbrel login, so changes are only accepted from the app's login proxy (SOLO45_PROXY_HOST)."""
+        Umbrel login, so changes are only accepted from the Umbrel login: umbrelOS's app gateway, which
+        connects from the host (the container's default gateway), or an app_proxy container
+        (SOLO45_PROXY_HOST) on umbrelOS versions that use one."""
         host = os.environ.get("SOLO45_PROXY_HOST")
         if not host:
             return True  # running on its own, outside the Umbrel app
+        allowed = set()
+        gw = default_gateway()
+        if gw:
+            allowed.add(gw)
         try:
-            allowed = {a[4][0] for a in socket.getaddrinfo(host, None)}
+            allowed |= {a[4][0] for a in socket.getaddrinfo(host, None)}
         except OSError:
-            return False
-        return self.client_address[0] in allowed
+            pass
+        ok = self.client_address[0] in allowed
+        if not ok:
+            print("refused a change from %s (accepted: %s)" % (self.client_address[0], ", ".join(sorted(allowed)) or "none"), flush=True)
+        return ok
 
     def do_POST(self):
         path = self.path.split("?")[0]
