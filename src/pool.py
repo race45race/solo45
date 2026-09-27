@@ -421,13 +421,16 @@ class Worker:
         now = time.time()
         self.accepted += 1
         self.last_share = now
+        # Credit the share at the difficulty of the job it was found on: right after a difficulty change the
+        # miner still works on the old job, so crediting the (lower) new difficulty undercounts its hashrate.
+        credit = self.job_diff.get(job.id, self.diff)
         self.vd_count += 1
-        self.vd_work += self.job_diff.get(job.id, self.diff)  # the difficulty this share was really sent at
-        self.shares.append((now, required))
+        self.vd_work += credit
+        self.shares.append((now, credit))
         while self.shares and self.shares[0][0] < now - 3600:
             self.shares.popleft()
         self.best = max(self.best, share_diff)
-        pool.share_accepted(self, required, share_diff, now, block=h <= job.target)
+        pool.share_accepted(self, credit, share_diff, now, block=h <= job.target)
         return True
 
     def vardiff(self, now):
