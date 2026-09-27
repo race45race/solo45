@@ -723,10 +723,13 @@ class Pool:
                 self.log_stats(now)
 
     def remember_diffs(self, now):
-        """Keep each settled miner's automatic difficulty, so it starts there after a restart or update."""
+        """Keep each settled miner's automatic difficulty, so it starts there after a restart or update.
+        Only while it's still sending shares: a connection left hanging (say during a firmware flash)
+        drags its difficulty down, and that low value shouldn't be remembered."""
         memory = self.state.setdefault("last_diff", {})
         for w in self.workers:
-            if w.authorized and not w.override().get("diff") and now - w.connected > 180:
+            if (w.authorized and not w.override().get("diff") and now - w.connected > 180
+                    and now - w.last_share < 60):
                 memory[w.name] = [w.diff, now]
 
     def remembered_diff(self, name):
@@ -814,28 +817,42 @@ class Pool:
         entry = {"height": report["height"], "mode": mode, "filtered": filtered, "txs": report["txs"],
                  "skipped": report["skipped"], "fees": report["fees"], "fees_skipped": report["fees_skipped"],
                  "weight_skipped": report["weight_skipped"], "by_rule": report["by_rule"],
-                 "examples": report["examples"], "at": time.time()}
+                 "examples": report["examples"], "watched": report["watched"], "fees_watched": report["fees_watched"],
+                 "watch_by_rule": report["watch_by_rule"], "at": time.time()}
         self.policy_heights[report["height"]] = entry
         self.policy_heights.move_to_end(report["height"])
         while len(self.policy_heights) > 144:  # about a day of blocks
             self.policy_heights.popitem(last=False)
+        why = lambda by_rule: ", ".join("%s %d" % (k, v["txs"]) for k, v in by_rule.items())
         if report["skipped"]:
-            log.info("policy (%s): %s %d of %d txs for block %d, %s sats in fees (%s)",
-                     "filtering" if filtered else "watch-only" if mode == "watch" else "fallback",
-                     "skipped" if filtered else "would skip", report["skipped"], report["txs"], report["height"],
-                     "{:,}".format(report["fees_skipped"]),
-                     ", ".join("%s %d" % (k, v["txs"]) for k, v in report["by_rule"].items()))
+            text = "%s %d of %d txs for block %d, %s sats in fees (%s)" % (
+                "skipped" if filtered else "would skip", report["skipped"], report["txs"], report["height"],
+                "{:,}".format(report["fees_skipped"]), why(report["by_rule"]))
+            if report["watched"]:
+                text += "; watch rules would also skip %d txs, %s sats (%s)" % (
+                    report["watched"], "{:,}".format(report["fees_watched"]), why(report["watch_by_rule"]))
+        elif report["watched"]:
+            text = "would skip %d of %d txs for block %d, %s sats in fees (%s)" % (
+                report["watched"], report["txs"], report["height"], "{:,}".format(report["fees_watched"]),
+                why(report["watch_by_rule"]))
+        else:
+            return
+        log.info("policy (%s): %s", "filtering" if filtered else "watch-only" if mode == "watch"
+                 else "fallback" if report["skipped"] else "watch rules", text)
 
     def policy_view(self):
         recent = list(self.policy_heights.values())
         done = recent[:-1]  # blocks already found by the network; the last one is still being mined
         totals = {"blocks": len(done), "skipped": sum(e["skipped"] for e in done),
-                  "fees_skipped": sum(e["fees_skipped"] for e in done), "by_rule": {}}
+                  "fees_skipped": sum(e["fees_skipped"] for e in done), "by_rule": {},
+                  "watched": sum(e.get("watched", 0) for e in done),
+                  "fees_watched": sum(e.get("fees_watched", 0) for e in done), "watch_by_rule": {}}
         for e in done:
-            for k, v in e["by_rule"].items():
-                t = totals["by_rule"].setdefault(k, {"txs": 0, "fees": 0})
-                t["txs"] += v["txs"]
-                t["fees"] += v["fees"]
+            for key in ("by_rule", "watch_by_rule"):
+                for k, v in e.get(key, {}).items():
+                    t = totals[key].setdefault(k, {"txs": 0, "fees": 0})
+                    t["txs"] += v["txs"]
+                    t["fees"] += v["fees"]
         return {"mode": self.policy_cfg["mode"], "rules": self.policy_cfg["rules"], "names": policy.RULE_NAMES,
                 "current": recent[-1] if recent else None, "recent": done[-12:][::-1], "totals": totals,
                 "fallback_height": self.policy_fallback_height}
@@ -847,8 +864,10 @@ class Pool:
         self.policy_cfg = cfg
         self.state["policy"] = cfg
         self.save_state()
-        log.info("template policy: mode %s, rules on: %s", cfg["mode"],
-                 ", ".join(k for k, v in cfg["rules"].items() if v.get("on")) or "none")
+        states = {k: policy.rule_state(v) for k, v in cfg["rules"].items()}
+        log.info("template policy: mode %s, filter: %s, watch only: %s", cfg["mode"],
+                 ", ".join(k for k, s in states.items() if s == "filter") or "none",
+                 ", ".join(k for k, s in states.items() if s == "watch") or "none")
         asyncio.get_running_loop().create_task(self.update_template())  # apply it to the next job right away
         return 200, dict(self.policy_view(), ok=True)
 

@@ -125,6 +125,7 @@ td.first, th.first { padding-left: 0; }
 .blocks td { font-size: 12.5px; }
 .pol-rules { display: grid; gap: 6px; font-size: 13px; }
 .pol-rules label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pol-rules select { font: inherit; font-size: 12.5px; padding: 2px 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; }
 .pol-rules input[type=number] { font: inherit; font-size: 12.5px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; }
 .kwh-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
 .kwh-link:hover { text-decoration-style: solid; }
@@ -356,16 +357,16 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <label for="polMode">Mode:</label>
       <select id="polMode">
         <option value="off">Off: use the node's template as it is</option>
-        <option value="watch">Watch only: count what would be skipped, change nothing</option>
-        <option value="filter">Filter: leave these transactions out of your blocks</option>
+        <option value="watch">Watch only: every rule only counts, nothing is left out</option>
+        <option value="filter">On: Filter rules leave transactions out, Watch rules only count</option>
       </select>
     </div>
     <div class="pol-rules">
-      <label><input type="checkbox" data-rule="inscriptions"> Inscriptions / Ordinals <span class="muted">data in taproot witness envelopes (images, BRC-20…)</span></label>
-      <label><input type="checkbox" data-rule="runes"> Runes <span class="muted">token transactions (OP_RETURN OP_13)</span></label>
-      <label><input type="checkbox" data-rule="opreturn"> OP_RETURN data over <input type="number" id="polOpBytes" min="0" max="100000" step="1" style="width:80px"> bytes <span class="muted">Knots uses 42 or 83</span></label>
-      <label><input type="checkbox" data-rule="baremultisig"> Bare multisig <span class="muted">data stored as fake multisig outputs (Stamps)</span></label>
-      <label><input type="checkbox" data-rule="minfee"> Fee rate below <input type="number" id="polMinFee" min="0" max="1000" step="0.1" style="width:70px"> sat/vB</label>
+      <label><select data-rule="inscriptions"></select> Inscriptions / Ordinals <span class="muted">data in taproot witness envelopes (images, BRC-20…)</span></label>
+      <label><select data-rule="runes"></select> Runes <span class="muted">token transactions (OP_RETURN OP_13)</span></label>
+      <label><select data-rule="opreturn"></select> OP_RETURN data over <input type="number" id="polOpBytes" min="0" max="100000" step="1" style="width:80px"> bytes <span class="muted">Knots uses 42 or 83</span></label>
+      <label><select data-rule="baremultisig"></select> Bare multisig <span class="muted">data stored as fake multisig outputs (Stamps)</span></label>
+      <label><select data-rule="minfee"></select> Fee rate below <input type="number" id="polMinFee" min="0" max="1000" step="0.1" style="width:70px"> sat/vB <span class="muted">per package: a low-fee parent stays when its child pays enough for both</span></label>
     </div>
     <div class="setting-ctl" style="margin:8px 0 12px">
       <button class="btn small" id="polSave" type="button">Save policy</button>
@@ -374,11 +375,11 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
     <div class="feed-head" id="polNow"></div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th class="first">Block</th><th class="r">Transactions</th><th class="r">Skipped</th><th class="r">Fees skipped</th><th>Why</th></tr></thead>
+        <thead><tr><th class="first">Block</th><th class="r">Transactions</th><th class="r">Skipped</th><th class="r">Fees skipped</th><th class="r">Watch rules</th><th>Why</th></tr></thead>
         <tbody id="polRows"></tbody>
       </table>
     </div>
-    <div class="ai-foot" id="polFoot">Skipped transactions only give up their fees; the block reward itself doesn't change. A transaction that spends a skipped one is skipped too. Every filtered job is still checked by your node, and if a check ever fails Solo45 mines the node's own template for that block.</div>
+    <div class="ai-foot" id="polFoot">Skipped transactions only give up their fees; the block reward itself doesn't change. A transaction that spends a skipped one is skipped too. The fee rule judges packages the way your node does, so a low-fee parent stays when its child pays enough for both. Watch rules only count what they would skip, so you can see what a rule would cost before switching it to Filter. Every filtered job is still checked by your node, and if a check ever fails Solo45 mines the node's own template for that block.</div>
   </section>
 
   <section class="card" style="margin-bottom:12px">
@@ -907,49 +908,68 @@ $("paySave").addEventListener("click", () => savePayout($("payAddr"), $("paySave
 const polReason = r => ({inscriptions: "inscriptions", runes: "Runes", opreturn: "OP_RETURN", baremultisig: "bare multisig",
                          minfee: "low fee", child: "child of skipped"}[r] || r);
 const sats = v => (v >= 1e6 ? (v / 1e8).toFixed(5) + " BTC" : Math.round(v).toLocaleString() + " sats");
+document.querySelectorAll("#policyCard select[data-rule]").forEach(sel => {
+  sel.innerHTML = '<option value="off">Off</option><option value="watch">Watch</option><option value="filter">Filter</option>';
+});
 let polFilled = false;
 function renderPolicy(s) {
   const p = (s.solo45 || {}).policy;
   if (!p) { $("polNow").textContent = "Solo45 hasn't reported its policy yet."; return; }
   if (!polFilled && !$("policyCard").contains(document.activeElement)) {
     $("polMode").value = p.mode;
-    document.querySelectorAll("#policyCard [data-rule]").forEach(cb => { cb.checked = !!(p.rules[cb.dataset.rule] || {}).on; });
+    document.querySelectorAll("#policyCard select[data-rule]").forEach(sel => {
+      const r = p.rules[sel.dataset.rule] || {};
+      sel.value = !r.on ? "off" : r.watch ? "watch" : "filter";
+    });
     $("polOpBytes").value = (p.rules.opreturn || {}).max_bytes ?? 83;
     $("polMinFee").value = (p.rules.minfee || {}).sat_vb ?? 1;
     polFilled = true;
   }
-  const c = p.current, verb = p.mode === "filter" ? "skipping" : "would skip";
-  const why = e => Object.entries(e.by_rule || {}).map(([k, v]) => `${polReason(k)} ${v.txs}`).join(", ") || "—";
+  const c = p.current, filter = p.mode === "filter";
+  const watching = !filter || Object.values(p.rules).some(r => r.on && r.watch);
+  const why = by => Object.entries(by || {}).map(([k, v]) => `${polReason(k)} ${v.txs}`).join(", ");
+  const count = (n, fees) => `<b>${(n || 0).toLocaleString()}</b> (${sats(fees || 0)})`;
   if (p.mode === "off") {
     $("polNow").innerHTML = "<span>The policy is off: Solo45 mines the node's template unchanged.</span>";
   } else if (c) {
-    const t = p.totals;
-    $("polNow").innerHTML = `<span>Now mining block ${c.height.toLocaleString()}: ${verb} <b>${c.skipped}</b> of ${c.txs} transactions (${sats(c.fees_skipped)} of ${sats(c.fees)} in fees)</span>`
-      + (t.blocks ? `<span>Last ${t.blocks} blocks: ${t.skipped.toLocaleString()} skipped, ${sats(t.fees_skipped)} in fees</span>` : "")
+    const t = p.totals, now = [], last = [];
+    if (filter) {
+      now.push(`skipping ${count(c.skipped, c.fees_skipped)} of ${c.txs.toLocaleString()} transactions`);
+      last.push(`${count(t.skipped, t.fees_skipped)} skipped`);
+    }
+    if (watching) {
+      now.push(`${filter ? "watch rules would also skip" : "would skip"} ${count(c.watched, c.fees_watched)}${filter ? "" : ` of ${c.txs.toLocaleString()} transactions`}`);
+      last.push(`${count(t.watched, t.fees_watched)} ${filter ? "more " : ""}would have been skipped`);
+    }
+    $("polNow").innerHTML = `<span>Now mining block ${c.height.toLocaleString()} (${sats(c.fees)} in fees): ${now.join("; ")}</span>`
+      + (t.blocks ? `<span>Last ${t.blocks} blocks: ${last.join("; ")}</span>` : "")
       + (p.fallback_height ? `<span style="color:var(--bad)">Block ${p.fallback_height}: the filtered job failed the node's check, so Solo45 mined the node's own template</span>` : "");
   } else {
     $("polNow").textContent = "Waiting for the next job…";
   }
   $("polRows").innerHTML = (p.recent || []).map(e => `<tr><td class="first num">${e.height.toLocaleString()}</td>`
     + `<td class="r num">${e.txs}</td><td class="r num">${e.skipped}</td><td class="r num">${sats(e.fees_skipped)}</td>`
-    + `<td>${esc(why(e))}${e.mode === "watch" ? ' <span class="muted">(watch only)</span>' : ""}</td></tr>`).join("")
-    || `<tr><td colspan="5" class="faint">No finished blocks yet since Solo45 started.</td></tr>`;
+    + `<td class="r num">${e.watched ? `${e.watched} <span class="muted">${sats(e.fees_watched)}</span>` : "—"}</td>`
+    + `<td>${[esc(why(e.by_rule)), e.watched ? `<span class="muted">watch: ${esc(why(e.watch_by_rule))}</span>` : ""].filter(Boolean).join(" ") || "—"}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="faint">No finished blocks yet since Solo45 started.</td></tr>`;
 }
 
 $("polSave").addEventListener("click", async () => {
   const rules = {};
-  document.querySelectorAll("#policyCard [data-rule]").forEach(cb => { rules[cb.dataset.rule] = {on: cb.checked}; });
+  document.querySelectorAll("#policyCard select[data-rule]").forEach(sel => {
+    rules[sel.dataset.rule] = {on: sel.value !== "off", watch: sel.value === "watch"};
+  });
   rules.opreturn.max_bytes = parseInt($("polOpBytes").value);
   rules.minfee.sat_vb = parseFloat($("polMinFee").value);
   if (!(rules.opreturn.max_bytes >= 0) || !(rules.minfee.sat_vb >= 0)) { $("polNote").textContent = "Fill in both numbers."; return; }
   const mode = $("polMode").value;
-  if (mode === "filter" && !confirm("Leave these transactions out of the blocks your miners work on? Their fees are given up, and every job is still checked by your node.")) return;
+  if (mode === "filter" && Object.values(rules).some(r => r.on && !r.watch) && !confirm("Leave these transactions out of the blocks your miners work on? Their fees are given up, and every job is still checked by your node.")) return;
   $("polSave").disabled = true;
   $("polNote").textContent = "Saving…";
   try {
     const r = await fetch("/api/solo45/policy", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({mode, rules})});
     const j = await r.json();
-    $("polNote").textContent = r.ok ? `Saved: ${{off: "off", watch: "watch only", filter: "filtering"}[j.mode]}` : `Not saved: ${j.error || r.status}`;
+    $("polNote").textContent = r.ok ? `Saved: ${{off: "off", watch: "watch only", filter: "on"}[j.mode]}` : `Not saved: ${j.error || r.status}`;
     if (r.ok) polFilled = false;
   } catch (e) {
     $("polNote").textContent = "Not saved: " + e.message;

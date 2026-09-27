@@ -135,15 +135,31 @@ cases = [
 bad = [(name, policy.classify({"data": d, "fee": 10000, "weight": 400}, on)) for name, d, want in cases
        if policy.classify({"data": d, "fee": 10000, "weight": 400}, on) != want]
 check("policy spots each kind of transaction", not bad, "(%d cases%s)" % (len(cases), ", wrong: %r" % bad if bad else ""))
-check("policy minimum fee rate", policy.classify({"data": raw_tx([p2wpkh]), "fee": 100, "weight": 400}, on) == ["minfee"])
+def ftx(txid, fee, depends=()):
+    return {"data": raw_tx([p2wpkh]), "txid": txid, "fee": fee, "weight": 400, "depends": list(depends)}  # 100 vB
+
+
+cpfp = {"height": 1, "transactions": [
+    ftx("parent 1 sat/vB", 100), ftx("child 20 sat/vB", 2000, [1]),  # the child pays for both: keep
+    ftx("parent 1 sat/vB", 100), ftx("child 2 sat/vB", 200, [3]),  # the pair pays 1.5: skip both
+    ftx("parent 20 sat/vB", 2000), ftx("child 1 sat/vB", 100, [5]),  # keep the parent, skip the child
+    ftx("alone 3 sat/vB", 300), ftx("alone 6 sat/vB", 600)]}
+rep = policy.evaluate(cpfp, policy.load_config({"mode": "filter", "rules": {"minfee": {"on": True, "sat_vb": 5}}}))
+check("policy fee rule counts child-pays-for-parent packages", sorted(rep["skip"]) == [2, 3, 5, 6],
+      "(skipped %s)" % sorted(rep["skip"]))
 check("policy witness commitment matches the node's", policy.witness_commitment(tpl["transactions"]).hex()
       == tpl.get("default_witness_commitment"), "(%d txs)" % len(tpl["transactions"]))
 fake = {"height": 1, "transactions": [
     {"data": raw_tx([b"\x6a\x5d\x00"]), "txid": "a", "fee": 5, "weight": 400, "depends": []},
     {"data": raw_tx([p2wpkh]), "txid": "b", "fee": 7, "weight": 400, "depends": [1]},
     {"data": raw_tx([p2wpkh]), "txid": "c", "fee": 9, "weight": 400, "depends": []}]}
-rep = policy.evaluate(fake, policy.load_config({}))
+rep = policy.evaluate(fake, policy.load_config({"mode": "filter"}))
 check("policy also skips children of skipped transactions", sorted(rep["skip"]) == [0, 1] and rep["fees_skipped"] == 12)
+rep = policy.evaluate(fake, policy.load_config({"mode": "filter", "rules": {"minfee": {"on": True, "watch": True, "sat_vb": 0.1}}}))
+check("policy watch rules only count", sorted(rep["skip"]) == [0, 1] and sorted(rep["watch"]) == [2]
+      and [t["txid"] for t in policy.apply(dict(fake, coinbasevalue=100), rep)["transactions"]] == ["c"])
+rep = policy.evaluate(fake, policy.load_config({"mode": "watch"}))
+check("policy watch mode leaves everything in", not rep["skip"] and sorted(rep["watch"]) == [0, 1])
 # the node must accept a block built from a filtered template (up to 3 transactions taken out)
 free = [n for n, t in enumerate(tpl["transactions"]) if not any(d - 1 == n for u in tpl["transactions"] for d in u.get("depends", []))]
 drop = {n: ["runes"] for n in free[:3]}
@@ -153,6 +169,15 @@ fcb = fjob.coinb1 + bytes(12) + fjob.coinb2(spk)
 fres = rpc.call("getblocktemplate", {"mode": "proposal", "data": fjob.block(fjob.header(fcb, fjob.version, fjob.curtime, 0), fcb).hex()})
 check("node accepts a filtered block proposal", fres is None,
       "(%d of %d txs removed, result %r)" % (len(drop), len(tpl["transactions"]), fres))
+# the node must accept a block with the package fee rule applied (parents and children kept together)
+feecfg = policy.load_config({"mode": "filter", "rules": dict({k: {"on": False} for k in ("inscriptions", "opreturn", "baremultisig", "runes")},
+                                                               minfee={"on": True, "sat_vb": 3})})
+frep = policy.evaluate(tpl, feecfg)
+fjob = P.Job("g", policy.apply(tpl, frep), cfg["coinbase_tag"].encode())
+fcb = fjob.coinb1 + bytes(12) + fjob.coinb2(spk)
+fres = rpc.call("getblocktemplate", {"mode": "proposal", "data": fjob.block(fjob.header(fcb, fjob.version, fjob.curtime, 0), fcb).hex()})
+check("node accepts a block with the fee rule applied", fres is None,
+      "(%d of %d txs below 3 sat/vB left out, result %r)" % (frep["skipped"], len(tpl["transactions"]), fres))
 
 
 # 4c. stall guard decisions, on made-up node states

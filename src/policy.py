@@ -19,13 +19,13 @@ RULE_NAMES = {
 }
 
 DEFAULTS = {
-    "mode": "watch",  # "off", "watch" (only count what would be skipped) or "filter"
-    "rules": {
-        "inscriptions": {"on": True},
-        "opreturn": {"on": True, "max_bytes": 83},
-        "baremultisig": {"on": True},
-        "runes": {"on": True},
-        "minfee": {"on": False, "sat_vb": 1.0},
+    "mode": "watch",  # "off", "watch" (every rule only counts) or "filter" (each rule as set below)
+    "rules": {  # "on": the rule is used; "watch": it only counts what it would skip, even in filter mode
+        "inscriptions": {"on": True, "watch": False},
+        "opreturn": {"on": True, "watch": False, "max_bytes": 83},
+        "baremultisig": {"on": True, "watch": False},
+        "runes": {"on": True, "watch": False},
+        "minfee": {"on": False, "watch": False, "sat_vb": 1.0},
     },
 }
 
@@ -146,7 +146,8 @@ def is_bare_multisig(spk):
 
 
 def classify(tx, rules):
-    """The rule names this template transaction breaks (empty list = keep it)."""
+    """The content rules this template transaction breaks (empty list = keep it). The fee rule is
+    judged on whole packages in evaluate()."""
     reasons = []
     try:
         outputs, witnesses = parse_tx(bytes.fromhex(tx["data"]))
@@ -167,43 +168,118 @@ def classify(tx, rules):
             if leaf and has_envelope(leaf):
                 reasons.append("inscriptions")
                 break
-    if on("minfee") and tx.get("weight"):
-        rate = tx.get("fee", 0) / (tx["weight"] / 4)
-        if rate < rules["minfee"].get("sat_vb", 1.0):
-            reasons.append("minfee")
     return reasons
 
 
 # ------------------------------------------------------------------ templates
 
-def evaluate(tpl, cfg):
-    """What the rules would take out of this template. Transactions that spend a skipped
-    transaction are skipped too, because a block can't contain a child without its parent."""
-    rules = cfg.get("rules", {})
-    skip = {}  # index in tpl["transactions"] -> reasons
-    txs = tpl["transactions"]
+def rule_state(rule):
+    """'off', 'watch' (only counts) or 'filter' for one rule's settings."""
+    if not rule.get("on"):
+        return "off"
+    return "watch" if rule.get("watch") else "filter"
+
+
+def vsize(tx):
+    """The size the node uses for fee rates: weight / 4, or more for transactions heavy in signature checks."""
+    return max(1, (max(tx.get("weight", 0), tx.get("sigops", 0) * 20) + 3) // 4)
+
+
+def low_fee(txs, candidates, sat_vb):
+    """The candidates that don't pay sat_vb, judged by package the way the node builds blocks: keep taking
+    the transaction whose not-yet-taken ancestors plus itself pay the best rate, until the best one left
+    pays less than sat_vb. So a low-fee parent stays when its child pays enough for both (child pays for
+    parent), and a low-fee child can't ride along on a parent that pays well."""
+    parents = {n: [d - 1 for d in txs[n].get("depends", []) if d - 1 in candidates] for n in candidates}
+    children = {n: [] for n in candidates}
+    for n, ps in parents.items():
+        for p in ps:
+            children[p].append(n)
+    fee = {n: txs[n].get("fee", 0) for n in candidates}
+    size = {n: vsize(txs[n]) for n in candidates}
+    low, seen = set(), set()
+    for start in sorted(candidates):
+        if start in seen:
+            continue
+        cluster, stack = set(), [start]  # everything linked to it by spending, in either direction
+        while stack:
+            n = stack.pop()
+            if n not in cluster:
+                cluster.add(n)
+                stack += parents[n] + children[n]
+        seen |= cluster
+        anc = {}
+        for n in sorted(cluster):  # the template lists parents before children
+            anc[n] = {n}.union(*(anc[p] for p in parents[n]))
+        left = set(cluster)
+        while left:
+            best, best_rate = None, -1.0
+            for n in sorted(left):
+                pkg = anc[n] & left
+                rate = sum(fee[m] for m in pkg) / sum(size[m] for m in pkg)
+                if rate > best_rate:
+                    best, best_rate = pkg, rate
+            if best_rate < sat_vb:
+                break
+            left -= best
+        low |= left
+    return low
+
+
+def select(txs, found, rules, names):
+    """Which transactions applying the rules in `names` leaves out: {index: reasons}. A transaction that
+    spends a left-out one goes too, because a block can't contain a child without its parent."""
+    skip = {}
     for n, tx in enumerate(txs):
-        reasons = classify(tx, rules)
+        reasons = [r for r in found[n] if r in names]
         if not reasons and any((d - 1) in skip for d in tx.get("depends", [])):
             reasons = ["child"]
         if reasons:
             skip[n] = reasons
-    by_rule = {}
-    for n, reasons in skip.items():
-        for r in reasons[:1]:  # count each transaction once, under its first reason
-            entry = by_rule.setdefault(r, {"txs": 0, "fees": 0})
+    if "minfee" in names:
+        rest = {n for n in range(len(txs)) if n not in skip}
+        for n in sorted(low_fee(txs, rest, rules["minfee"].get("sat_vb", 1.0))):
+            skip[n] = ["minfee"]
+    return skip
+
+
+def evaluate(tpl, cfg):
+    """What the rules take out of this template ("skip", used in filter mode), and what the rules set to
+    watch would take out on top of that ("watch", only counted)."""
+    rules = cfg.get("rules", {})
+    state = {name: rule_state(rule) for name, rule in rules.items()}
+    counted = {name for name, s in state.items() if s != "off"}
+    applied = {name for name, s in state.items() if s == "filter"} if cfg.get("mode") == "filter" else set()
+    txs = tpl["transactions"]
+    found = [classify(tx, rules) for tx in txs]
+    skip = select(txs, found, rules, applied)
+    would = select(txs, found, rules, counted) if counted != applied else skip
+    watch = {n: reasons for n, reasons in would.items() if n not in skip}
+
+    def tally(part):
+        by_rule = {}
+        for n, reasons in part.items():  # count each transaction once, under its first reason
+            entry = by_rule.setdefault(reasons[0], {"txs": 0, "fees": 0})
             entry["txs"] += 1
             entry["fees"] += txs[n].get("fee", 0)
+        return by_rule
+
     return {
         "height": tpl["height"],
         "txs": len(txs),
+        "fees": sum(t.get("fee", 0) for t in txs),
         "skip": skip,
         "skipped": len(skip),
-        "fees": sum(t.get("fee", 0) for t in txs),
         "fees_skipped": sum(txs[n].get("fee", 0) for n in skip),
         "weight_skipped": sum(txs[n].get("weight", 0) for n in skip),
-        "by_rule": by_rule,
+        "by_rule": tally(skip),
         "examples": [{"txid": txs[n]["txid"], "rule": skip[n][0]} for n in list(skip)[:5]],
+        "watch": watch,
+        "watched": len(watch),
+        "fees_watched": sum(txs[n].get("fee", 0) for n in watch),
+        "weight_watched": sum(txs[n].get("weight", 0) for n in watch),
+        "watch_by_rule": tally(watch),
+        "watch_examples": [{"txid": txs[n]["txid"], "rule": watch[n][0]} for n in list(watch)[:5]],
     }
 
 
@@ -254,6 +330,8 @@ def check_config(data, current):
         rule = cfg["rules"].setdefault(name, dict(DEFAULTS["rules"][name]))
         if "on" in change:
             rule["on"] = bool(change["on"])
+        if "watch" in change:
+            rule["watch"] = bool(change["watch"])
         if name == "opreturn" and "max_bytes" in change:
             val = int(change["max_bytes"])
             if not 0 <= val <= 100000:
