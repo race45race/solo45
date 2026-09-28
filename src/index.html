@@ -125,6 +125,9 @@ td.first, th.first { padding-left: 0; }
 .blocks td { font-size: 12.5px; }
 .pol-rules { display: grid; gap: 6px; font-size: 13px; }
 .pol-rules label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.nt-list { display: grid; gap: 6px; font-size: 13px; }
+.nt-list label { display: block; }
+.nt-list input[type=number] { font: inherit; font-size: 12.5px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; }
 .pol-rules select { font: inherit; font-size: 12.5px; padding: 2px 4px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; }
 .pol-rules input[type=number] { font: inherit; font-size: 12.5px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; }
 .kwh-link { color: inherit; text-decoration: underline dotted; text-underline-offset: 2px; cursor: pointer; }
@@ -332,7 +335,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <span class="muted" id="payNote"></span>
     </div>
     <div class="ai-foot" style="margin:0 0 14px">Where a found block's reward goes, for miners that don't put their own address in their username. Your node checks the address before it's saved.</div>
-    <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes. Datum uses 120.</div>
+    <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="kwhPrice">Electricity price:</label>
       <input type="text" id="kwhCur" maxlength="3" aria-label="Currency symbol" style="width:44px;text-align:center">
@@ -373,6 +376,12 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <span class="muted" id="polNote"></span>
     </div>
     <div class="feed-head" id="polNow"></div>
+    <div class="tablewrap" id="polPeriodsWrap" style="margin-bottom:12px;display:none">
+      <table>
+        <thead><tr><th class="first">Totals</th><th class="r">Blocks</th><th class="r">Skipped</th><th class="r">Fees skipped</th><th class="r">Share of fees</th><th class="r">Watch rules would skip</th></tr></thead>
+        <tbody id="polPeriods"></tbody>
+      </table>
+    </div>
     <div class="tablewrap">
       <table>
         <thead><tr><th class="first">Block</th><th class="r">Transactions</th><th class="r">Skipped</th><th class="r">Fees skipped</th><th class="r">Watch rules</th><th>Why</th></tr></thead>
@@ -380,6 +389,40 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       </table>
     </div>
     <div class="ai-foot" id="polFoot">Skipped transactions only give up their fees; the block reward itself doesn't change. A transaction that spends a skipped one is skipped too. The fee rule judges packages the way your node does, so a low-fee parent stays when its child pays enough for both. Watch rules only count what they would skip, so you can see what a rule would cost before switching it to Filter. Every filtered job is still checked by your node, and if a check ever fails Solo45 mines the node's own template for that block.</div>
+  </section>
+
+  <section class="card" id="notifyCard" style="margin-bottom:12px">
+    <h2>Phone alerts <span class="muted">push notifications through the free ntfy app, no account needed</span></h2>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:8px">
+      <label for="ntTopic">Topic:</label>
+      <input type="text" id="ntTopic" maxlength="64" autocomplete="off" spellcheck="false" style="width:230px">
+      <button class="btn small" id="ntNew" type="button">New random topic</button>
+    </div>
+    <div class="nt-list" style="margin-bottom:8px">
+      <label><input type="checkbox" id="ntOn"> <b>Send alerts</b></label>
+      <label><input type="checkbox" data-nt="block"> Block found 🎉</label>
+      <label><input type="checkbox" data-nt="best"> New best share ever</label>
+      <label><input type="checkbox" data-nt="offline"> A miner stops answering, or switches to its backup pool</label>
+      <label><input type="checkbox" data-nt="hot"> A miner runs hot</label>
+      <label><input type="checkbox" data-nt="node"> Node or Solo45 trouble <span class="muted">node behind or not answering, Solo45 down, a failed block check</span></label>
+      <label>Warn after <input type="number" id="ntMin" min="1" max="240" step="1" style="width:60px"> minutes <span class="muted">problems that fix themselves sooner stay quiet; you also get a short all-clear</span></label>
+    </div>
+    <details style="margin-bottom:8px">
+      <summary class="muted">Your own ntfy server (optional)</summary>
+      <div class="setting-ctl" style="flex-wrap:wrap;margin-top:6px">
+        <label for="ntServer">Server:</label>
+        <input type="text" id="ntServer" maxlength="200" spellcheck="false" style="width:220px" placeholder="https://ntfy.sh">
+        <label for="ntToken">Access token:</label>
+        <input type="password" id="ntToken" maxlength="200" autocomplete="off" style="width:180px">
+      </div>
+    </details>
+    <div class="setting-ctl" style="flex-wrap:wrap">
+      <button class="btn small" id="ntSave" type="button">Save alerts</button>
+      <button class="btn small" id="ntTest" type="button">Send test</button>
+      <span class="muted" id="ntNote"></span>
+    </div>
+    <div class="feed-head" id="ntLog" style="margin-top:8px"></div>
+    <div class="ai-foot" id="ntHelp"><span>1. Install <b>ntfy</b> on your phone (Android or iPhone). 2. In the app, tap + and subscribe to your topic<span id="ntSub"></span>. 3. Save here and press Send test. Anyone who knows the topic can read your alerts, so keep the random name private. Alerts only contain miner names, block heights and share sizes, never your address.</span></div>
   </section>
 
   <section class="card" style="margin-bottom:12px">
@@ -409,7 +452,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
     <div class="feed-head" id="switchStats"></div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th class="first">Height</th><th>Seen</th><th class="r">Gap</th><th class="r">Solo45 new work</th><th class="r">Datum new work</th><th class="r">Go Brrr new work</th><th class="r">Miners on new block</th></tr></thead>
+        <thead><tr><th class="first">Height</th><th>Seen</th><th class="r">Gap</th><th class="r">Solo45 new work</th><th class="r" id="thDatum">Datum new work</th><th class="r" id="thGobrrr">Go Brrr new work</th><th class="r">Miners on new block</th></tr></thead>
         <tbody id="blocks"></tbody>
       </table>
     </div>
@@ -465,7 +508,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
   </section>
 
   <footer>
-    <span>Updates live from your node, Solo45, Go Brrr, and each miner. Only Solo45 share difficulty can be changed here.</span>
+    <span>Updates live from your node, Solo45 and each miner. Changes made here only affect Solo45, never the miners' own settings.</span>
     <span id="updated"></span>
     <button id="themeBtn" type="button">Theme</button>
   </footer>
@@ -665,7 +708,7 @@ function renderAlerts(s) {
   const onSolo = s.miners.some(m => m.pool === "Solo45");
   const explain = text => `<button class="btn small explain" type="button" data-alert="${esc(text)}">Explain</button>`;
   if (!so.up && (onSolo || so.checked)) out.push(`<div class="alert bad"><span><b>Solo45 pool</b> is not responding <span class="muted">(${esc(so.error || "no reply")})</span></span>${explain("Solo45 pool is not responding: " + (so.error || "no reply"))}</div>`);
-  else if (so.up && so.proposal && so.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45:</b> your node rejected the pool's test block (${esc(so.proposal.result)}). Found blocks might be invalid, so move miners to Datum until this is fixed.</span>${explain("Solo45 block proposal check failed: " + so.proposal.result)}</div>`);
+  else if (so.up && so.proposal && so.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45:</b> your node rejected the pool's test block (${esc(so.proposal.result)}). Found blocks might be invalid, so point your miners at their backup pool until this is fixed.</span>${explain("Solo45 block proposal check failed: " + so.proposal.result)}</div>`);
   for (const m of s.miners) {
     if (m.block_found) out.push(`<div class="alert found">🎉 ${esc(m.name)} reports a found block!</div>`);
     if (m.status === "offline") out.push(`<div class="alert bad"><span><b>${esc(m.name)}</b> is not responding <span class="muted">(${esc(m.ip)})</span></span>${explain(m.name + " (" + m.ip + ") is not responding")}</div>`);
@@ -689,14 +732,18 @@ function renderBlock(s) {
   const max = Math.max(1000, ...times);
   const bar = (ms, color) => `<div class="tl-bar">${ms == null ? "" : `<span style="width:${Math.max(0.6, Math.max(ms, 0) / max * 100)}%;background:${color}"></span>`}</div>`;
   const ck = poolColor("Go Brrr");
+  // other pools on this Umbrel only get a row while they're in use
+  const hasDatum = tip.datum_ms != null || s.miners.some(m => m.pool === "Datum");
+  const hasGobrrr = tip.gobrrr_ms != null || (s.gobrrr && s.gobrrr.updated_ms && s.now_ms - s.gobrrr.updated_ms < 600000);
   rows.push(`<div class="tl-row"><span class="name">Your node</span>${bar(0, "var(--text)")}<span class="t num">0 ms</span></div>`);
   if ((s.solo45 || {}).up || tip.solo45_ms != null)
     rows.push(`<div class="tl-row" title="${tip.solo45_ms < 0 ? "Sent before the dashboard read the node's log line. " : ""}${tip.solo45_build_ms != null ? `Solo45 built and sent the new work ${tip.solo45_build_ms} ms after it spotted the block.` : ""}"><span class="name">Solo45 new work</span>${bar(tip.solo45_ms, poolColor("Solo45"))}<span class="t num">${fmtMs(tip.solo45_ms)}${tip.solo45_build_ms != null ? `<span class="faint hide-sm"> · built ${tip.solo45_build_ms} ms</span>` : ""}</span></div>`);
-  if (tip.live) {
+  if (tip.live && hasDatum) {
     const waitingD = tip.datum_ms == null && (s.now_ms - tip.seen_ms) < 20000;
     rows.push(`<div class="tl-row" title="When the first miner on Datum received the new block's work"><span class="name">Datum Gateway</span>${bar(tip.datum_ms, poolColor("Datum"))}<span class="t num ${tip.datum_ms == null ? "faint" : ""}">${tip.datum_ms != null ? fmtMs(tip.datum_ms) : waitingD ? "…" : "—"}</span></div>`);
   }
-  rows.push(`<div class="tl-row"><span class="name">Go Brrr new work</span>${bar(tip.gobrrr_ms, ck)}<span class="t num">${tip.live ? fmtMs(tip.gobrrr_ms) : (tip.gobrrr_ms != null && tip.gobrrr_ms < 1000 ? "&lt;1 s" : fmtMs(tip.gobrrr_ms))}</span></div>`);
+  if (hasGobrrr)
+    rows.push(`<div class="tl-row"><span class="name">Go Brrr new work</span>${bar(tip.gobrrr_ms, ck)}<span class="t num">${tip.live ? fmtMs(tip.gobrrr_ms) : (tip.gobrrr_ms != null && tip.gobrrr_ms < 1000 ? "&lt;1 s" : fmtMs(tip.gobrrr_ms))}</span></div>`);
   const sorted = bitaxes.slice().sort((a, b) => (tip.miners[a.name] ?? 1e12) - (tip.miners[b.name] ?? 1e12));
   for (const m of sorted) {
     const ms = tip.miners[m.name];
@@ -705,8 +752,10 @@ function renderBlock(s) {
   }
   $("timeline").innerHTML = rows.join("");
   $("tlNote").textContent = tip.live
-    ? "Bitaxe times include up to ~0.5 s of polling delay; S21 and S19K Pro times up to ~0.2 s (taken from when Datum sends them a new job). Datum Gateway = the first miner on Datum to get the new block's work. Times count from when the dashboard read the block in the node's log; a negative time means that pool was even quicker."
-    : "This block arrived before the dashboard started, so only Go Brrr's timing (to the second) is known. The next block will be timed live, including Solo45.";
+    ? "Bitaxe times include up to ~0.5 s of polling delay; Braiins OS miners up to ~0.2 s (taken from when their pool sends them a new job)."
+      + (hasDatum ? " Datum Gateway = the first miner on Datum to get the new block's work." : "")
+      + " Times count from when the dashboard read the block in the node's log; a negative time means the pool was even quicker."
+    : "This block arrived before the dashboard started, so it wasn't timed. The next block will be timed live.";
   if (tip.hash !== lastTipHash) {
     if (lastTipHash) { const c = $("blockCard"); c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
     lastTipHash = tip.hash;
@@ -932,21 +981,30 @@ function renderPolicy(s) {
   if (p.mode === "off") {
     $("polNow").innerHTML = "<span>The policy is off: Solo45 mines the node's template unchanged.</span>";
   } else if (c) {
-    const t = p.totals, now = [], last = [];
-    if (filter) {
-      now.push(`skipping ${count(c.skipped, c.fees_skipped)} of ${c.txs.toLocaleString()} transactions`);
-      last.push(`${count(t.skipped, t.fees_skipped)} skipped`);
-    }
-    if (watching) {
+    const now = [];
+    if (filter) now.push(`skipping ${count(c.skipped, c.fees_skipped)} of ${c.txs.toLocaleString()} transactions`);
+    if (watching)
       now.push(`${filter ? "watch rules would also skip" : "would skip"} ${count(c.watched, c.fees_watched)}${filter ? "" : ` of ${c.txs.toLocaleString()} transactions`}`);
-      last.push(`${count(t.watched, t.fees_watched)} ${filter ? "more " : ""}would have been skipped`);
-    }
     $("polNow").innerHTML = `<span>Now mining block ${c.height.toLocaleString()} (${sats(c.fees)} in fees): ${now.join("; ")}</span>`
-      + (t.blocks ? `<span>Last ${t.blocks} blocks: ${last.join("; ")}</span>` : "")
       + (p.fallback_height ? `<span style="color:var(--bad)">Block ${p.fallback_height}: the filtered job failed the node's check, so Solo45 mined the node's own template</span>` : "");
   } else {
     $("polNow").textContent = "Waiting for the next job…";
   }
+  // totals kept across restarts: last 24 hours, 7 days and 30 days (or since the first saved block)
+  const perRows = [];
+  let prevBlocks = -1;
+  for (const x of (p.periods || []).filter(x => x.blocks)) {
+    if (x.blocks === prevBlocks) continue;  // nothing older saved yet, so a longer period would repeat the row
+    prevBlocks = x.blocks;
+    const partial = p.history_since && p.history_since > Date.now() / 1000 - x.seconds;
+    const label = partial ? "Since " + new Date(p.history_since * 1000).toLocaleDateString([], {month: "short", day: "numeric"}) : "Last " + x.label;
+    perRows.push(`<tr><td class="first">${label}</td><td class="r num">${x.blocks.toLocaleString()}</td>`
+      + `<td class="r num">${x.skipped.toLocaleString()}</td><td class="r num">${sats(x.fees_skipped)}</td>`
+      + `<td class="r num">${x.fees ? fmtPct(x.fees_skipped / x.fees) : "—"}</td>`
+      + `<td class="r num">${x.watched ? `${x.watched.toLocaleString()} <span class="muted">${sats(x.fees_watched)}</span>` : "—"}</td></tr>`);
+  }
+  $("polPeriodsWrap").style.display = perRows.length && p.mode !== "off" ? "" : "none";
+  $("polPeriods").innerHTML = perRows.join("");
   $("polRows").innerHTML = (p.recent || []).map(e => `<tr><td class="first num">${e.height.toLocaleString()}</td>`
     + `<td class="r num">${e.txs}</td><td class="r num">${e.skipped}</td><td class="r num">${sats(e.fees_skipped)}</td>`
     + `<td class="r num">${e.watched ? `${e.watched} <span class="muted">${sats(e.fees_watched)}</span>` : "—"}</td>`
@@ -977,6 +1035,72 @@ $("polSave").addEventListener("click", async () => {
   $("polSave").disabled = false;
 });
 
+// ---- phone alerts (ntfy)
+let ntFilled = false;
+function randomTopic() {
+  const abc = "abcdefghijkmnpqrstuvwxyz23456789", b = new Uint8Array(16);
+  crypto.getRandomValues(b);
+  return "solo45-" + Array.from(b, x => abc[x % abc.length]).join("");
+}
+async function ntLoad(refill) {
+  let n;
+  try {
+    const r = await fetch("/api/notify/status");
+    if (!r.ok) { $("ntNote").textContent = r.status === 403 ? "Open the dashboard through your Umbrel to set up alerts." : "Couldn't load the alert settings."; return; }
+    n = await r.json();
+  } catch (e) { return; }
+  if (refill || (!ntFilled && !$("notifyCard").contains(document.activeElement))) {
+    $("ntOn").checked = n.on;
+    $("ntTopic").value = n.topic || "";
+    $("ntMin").value = n.after_min;
+    $("ntServer").value = n.server === "https://ntfy.sh" ? "" : n.server;
+    $("ntToken").value = "";
+    $("ntToken").placeholder = n.token_set ? "saved (type to replace)" : "only for a protected server";
+    document.querySelectorAll("#notifyCard [data-nt]").forEach(cb => { cb.checked = n.events[cb.dataset.nt] !== false; });
+    ntFilled = true;
+  }
+  $("ntSub").innerHTML = n.topic ? ` <b>${esc(n.topic)}</b>${n.server !== "https://ntfy.sh" ? ` on ${esc(n.server)}` : ""}` : "";
+  $("ntLog").innerHTML = (n.log || []).length ? "<span>Last alerts:</span>" + n.log.slice(0, 5).map(e =>
+    `<span>${new Date(e.t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})} · ${esc(e.title)}</span>`).join("") : "";
+}
+$("ntNew").addEventListener("click", () => {
+  $("ntTopic").value = randomTopic();
+  $("ntNote").textContent = "New topic: save it, then subscribe to it in the ntfy app.";
+});
+$("ntSave").addEventListener("click", async () => {
+  if (!$("ntTopic").value.trim()) $("ntTopic").value = randomTopic();
+  const events = {};
+  document.querySelectorAll("#notifyCard [data-nt]").forEach(cb => { events[cb.dataset.nt] = cb.checked; });
+  const body = {on: $("ntOn").checked, topic: $("ntTopic").value.trim(), after_min: parseInt($("ntMin").value) || 10,
+                events, server: $("ntServer").value.trim() || "https://ntfy.sh", click: location.origin};
+  if ($("ntToken").value.trim()) body.token = $("ntToken").value.trim();
+  $("ntSave").disabled = true;
+  try {
+    const r = await fetch("/api/notify/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+    const j = await r.json();
+    $("ntNote").textContent = r.ok ? (j.on ? "Saved: alerts are on." : "Saved: alerts are off.") : `Not saved: ${j.error || r.status}`;
+    if (r.ok) await ntLoad(true);
+  } catch (e) {
+    $("ntNote").textContent = "Not saved: " + e.message;
+  }
+  $("ntSave").disabled = false;
+});
+$("ntTest").addEventListener("click", async () => {
+  $("ntTest").disabled = true;
+  $("ntNote").textContent = "Sending…";
+  try {
+    const r = await fetch("/api/notify/test", {method: "POST"});
+    const j = await r.json();
+    $("ntNote").textContent = r.ok ? "Test sent: check your phone." : `Not sent: ${j.error || r.status}`;
+    if (r.ok) ntLoad();
+  } catch (e) {
+    $("ntNote").textContent = "Not sent: " + e.message;
+  }
+  $("ntTest").disabled = false;
+});
+ntLoad();
+setInterval(ntLoad, 60000);
+
 $("soloWorkers").addEventListener("change", e => {
   if (e.target.tagName !== "SELECT") return;
   const input = e.target.parentElement.querySelector("input");
@@ -1005,10 +1129,10 @@ function renderBestToday(s) {
   $("btFleet").innerHTML = `<span>Best on Solo45 today <b class="num">${fmtDiff(f.best)}</b>${f.name ? ` (${esc(f.name)})` : ""}</span>`
     + `<span>typical so far <b class="num">${fmtDiff(f.typical)}</b></span><span>${luckPill(f.tag)}</span>`
     + (nd && f.best ? `<span>${f.best / nd >= 0.001 ? fmtPct(f.best / nd) : "1/" + fmtDiff(nd / f.best)} of a block</span>` : "")
-    + (bt.since ? `<span class="faint">counting since ${new Date(bt.since * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}${bt.miners.some(m => !m.exact) ? " · *Datum miners: only new records since their restart" : ""}</span>` : "");
+    + (bt.since ? `<span class="faint">counting since ${new Date(bt.since * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}${bt.miners.some(m => !m.exact) ? " · *miners on other pools: only new records since their restart" : ""}</span>` : "");
   $("btRows").innerHTML = bt.miners.map(m => `<tr>
       <td class="first"><div class="mname">${esc(m.name)}</div></td>
-      <td class="r num">${m.best ? fmtDiff(m.best) : m.exact ? '<span class="faint">none yet</span>' : '<span class="faint" title="Miners on Datum only report their best since restart, so a new best shows here only when it beats that record. Exact once it moves to Solo45.">not tracked on Datum*</span>'}</td>
+      <td class="r num">${m.best ? fmtDiff(m.best) : m.exact ? '<span class="faint">none yet</span>' : '<span class="faint" title="Miners on other pools only report their best since restart, so a new best shows here only when it beats that record. Exact once it moves to Solo45.">not on Solo45*</span>'}</td>
       <td class="r num">${m.at ? clock(m.at * 1000) : "—"}</td>
       <td class="r num">${fmtDiff(m.typical)}</td>
       <td class="r num">${fmtRatio(m.ratio)}</td>
@@ -1271,6 +1395,10 @@ function renderBlocks(s) {
   }
   const rows = [];
   const bl = s.blocks;
+  // columns for other pools on this Umbrel only show while some recent block has their timing
+  const hasDatum = bl.some(b => b.datum_ms != null), hasGobrrr = bl.some(b => b.gobrrr_ms != null);
+  $("thDatum").style.display = hasDatum ? "" : "none";
+  $("thGobrrr").style.display = hasGobrrr ? "" : "none";
   for (let i = 0; i < bl.length; i++) {
     const b = bl[i], prev = bl[i + 1];
     const gap = prev ? (b.seen_ms - prev.seen_ms) / 1000 : null;
@@ -1284,8 +1412,8 @@ function renderBlocks(s) {
       <td class="num">${clock(b.seen_ms)}</td>
       <td class="r num">${gap != null ? fmtDur(gap) : "—"}</td>
       <td class="r num">${b.solo45_ms != null ? fmtMs(b.solo45_ms) : "—"}</td>
-      <td class="r num">${b.datum_ms != null ? fmtMs(b.datum_ms) : "—"}</td>
-      <td class="r num">${ck}</td>
+      ${hasDatum ? `<td class="r num">${b.datum_ms != null ? fmtMs(b.datum_ms) : "—"}</td>` : ""}
+      ${hasGobrrr ? `<td class="r num">${ck}</td>` : ""}
       <td class="r num">${b.live ? (n ? `${n} · slowest ${fmtMs(slowest)}` : "…") : '<span class="faint">before start</span>'}</td>
     </tr>`);
   }

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Solo Mining Dashboard: a live view of an Umbrel solo-mining fleet.
 
-Reads the Bitcoin Core and ckpool (Go Brrr) logs as they are written, polls
-Bitaxe (AxeOS HTTP API) and Braiins OS (CGMiner API, port 4028) miners and the
-Solo45 pool, and serves one page plus a Server-Sent Events stream. The only
-thing it changes is Solo45's per-miner share difficulty, when the user asks.
+Reads the Bitcoin Core log as it is written (and a ckpool log, if another pool
+such as Go Brrr runs on the same Umbrel), polls Bitaxe (AxeOS HTTP API) and
+Braiins OS (CGMiner API, port 4028) miners and the Solo45 pool, and serves one
+page plus a Server-Sent Events stream. It changes Solo45's settings only when
+the user asks, and can send phone alerts through ntfy.
 The optional Claude assistant (ai.py) needs the anthropic library from ./venv.
 """
 import base64
@@ -35,12 +36,13 @@ DAILY_PATH = os.path.join(DATA, "best_today.json")
 BEST_HISTORY_PATH = os.path.join(DATA, "best_history.json")
 WORK_PATH = os.path.join(DATA, "work.json")
 TEMPS_PATH = os.path.join(DATA, "temps.json")
+NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
 
 CFG = {
     "port": 8099,
     "bitcoin_log": NODE_DIR + "/debug.log",
     "ckpool_log": os.environ.get("GOBRRR_LOG") or HOME + "/umbrel/app-data/gobrrr-pool/data/ckpool-logs/ckpool.log",
-    "miners": [],   # extra miner IPs, on top of those found in the Go Brrr log
+    "miners": [],   # extra miner IPs, on top of those connected to Solo45 (or found in a ckpool log)
     "ignore": [],   # miner IPs to leave out entirely
     "pools": {"23334": "Datum", "21420": "Go Brrr", "21422": "Go Brrr (high diff)", "3333": "Solo45"},
     "poll_seconds": 5,
@@ -58,11 +60,17 @@ CFG = {
     "currency": "$",    # symbol shown with costs
     "ai": {"model": "claude-opus-5", "weekly_cap_usd": 2.0, "monthly_cap_usd": 8.0, "report_hour": 8,
            "report_every_days": 3},
+    # phone alerts through ntfy (https://ntfy.sh or your own server); off until the user turns them on
+    "notify": {"on": False, "server": "https://ntfy.sh", "topic": "", "after_min": 10, "click": "",
+               "events": {"block": True, "best": True, "offline": True, "hot": True, "node": True}},
 }
 if os.path.exists(CFG_PATH):
     with open(CFG_PATH) as f:
         _user = json.load(f)
     CFG["ai"].update(_user.pop("ai", {}))
+    _notify = _user.pop("notify", {})
+    CFG["notify"]["events"].update(_notify.pop("events", {}))
+    CFG["notify"].update(_notify)
     CFG.update(_user)
 for _var, _key, _kind in (("SOLO45_DASH_PORT", "port", int), ("BITCOIN_RPC_URL", "rpc_url", str),
                           ("BITCOIN_RPC_USER", "rpc_user", str), ("BITCOIN_RPC_PASS", "rpc_pass", str)):
@@ -99,6 +107,7 @@ S = {
     "work": {},          # {"month", "hashes", "since", "prev"}: fleet hashes this month
     "temps": {},         # name -> [[t, chip, vr, online], ...] every 5 minutes for 24 h
     "node": {},          # node, network, difficulty-adjustment and halving stats
+    "notify_log": [],    # the last phone alerts sent, newest first: {"t", "title"}
 }
 ck_pending = {}          # block hash -> ckpool "Block hash changed" time (ms)
 solo_pending = {}        # block hash -> time (ms) Solo45 sent work on top of it
@@ -387,7 +396,8 @@ def node_loop():
             halving = (h // 210000 + 1) * 210000
             with lock:
                 S["node"] = {
-                    "ok": True, "height": h, "synced": not bc["initialblockdownload"] and bc["verificationprogress"] > 0.9999,
+                    "ok": True, "height": h, "headers": bc["headers"],
+                    "synced": not bc["initialblockdownload"] and bc["verificationprogress"] > 0.9999,
                     "peers_in": net["connections_in"], "peers_out": net["connections_out"], "version": net["subversion"],
                     "mempool_tx": mp["size"], "mempool_mb": mp["bytes"] / 1e6, "mempool_fees": mp.get("total_fee"),
                     "size_gb": bc.get("size_on_disk", 0) / 1e9,
@@ -1027,6 +1037,225 @@ def state_push_loop():
             broadcast("state", snap)
 
 
+# -------------------------------------------------------------- phone alerts
+
+NOTIFY_KINDS = ("block", "best", "offline", "hot", "node")
+
+
+def fmt_diff(d):
+    for unit, v in (("T", 1e12), ("G", 1e9), ("M", 1e6), ("K", 1e3)):
+        if d >= v:
+            return "%.2f %s" % (d / v, unit)
+    return "%.0f" % d
+
+
+def read_ntfy_token():
+    try:
+        with open(NTFY_TOKEN_PATH) as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
+def ntfy_send(title, message, priority=3, tags=""):
+    """Post one message to the user's ntfy topic. Titles go in an HTTP header, so they're kept ASCII."""
+    cfg = CFG["notify"]
+    headers = {"Title": title.encode("ascii", "replace").decode(), "Priority": str(priority)}
+    if tags:
+        headers["Tags"] = tags
+    if cfg.get("click"):
+        headers["Click"] = cfg["click"]  # tapping the alert opens the dashboard
+    token = read_ntfy_token()
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    req = urllib.request.Request(cfg["server"].rstrip("/") + "/" + cfg["topic"], message.encode(), headers, method="POST")
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.status
+
+
+def send_alert(kind, title, message, priority=4, tags="warning"):
+    """Send an alert if alerts are on and this kind is wanted; True once it went out."""
+    cfg = CFG["notify"]
+    if not (cfg.get("on") and cfg.get("topic")) or not cfg["events"].get(kind, True):
+        return False
+    try:
+        ntfy_send(title, message, priority, tags)
+    except Exception as e:
+        print("alert not sent (%s): %s" % (title, e), flush=True)
+        return False
+    with lock:
+        S["notify_log"].insert(0, {"t": time.time(), "title": title})
+        del S["notify_log"][10:]
+    print("alert sent: %s" % title, flush=True)
+    return True
+
+
+def notify_conditions(snap):
+    """Problems going on right now: {key: (kind, title, message, title once it's fixed)}."""
+    out = {}
+    for m in snap["miners"]:
+        name = m.get("name") or m["ip"]
+        if m["status"] == "offline":
+            out["offline:" + name] = ("offline", "%s is not responding" % name,
+                                      "%s (%s) isn't answering. Check its power and Wi-Fi." % (name, m["ip"]),
+                                      "%s is back" % name)
+        elif m.get("on_fallback"):
+            out["backup:" + name] = ("offline", "%s is on its backup pool" % name,
+                                     "%s is mining on %s instead of its main pool." % (name, m.get("pool") or "its backup pool"),
+                                     "%s is back on its main pool" % name)
+        if m.get("status_text") == "Running hot":
+            out["hot:" + name] = ("hot", "%s is running hot" % name,
+                                  "%s: chip at %s C, fan %s%%." % (name, round(m.get("temp") or 0), round(m.get("fan") or 0)),
+                                  "%s has cooled down" % name)
+    node = snap.get("node") or {}
+    if node.get("ok") is False:
+        out["node:down"] = ("node", "Your node isn't answering",
+                            "The dashboard can't reach Bitcoin Core: %s" % node.get("error", "no reply"),
+                            "Your node is answering again")
+    elif node.get("ok") and (not node.get("synced") or (node.get("headers") or 0) > node["height"]):
+        out["node:behind"] = ("node", "Your node is behind",
+                              "Your node is on block %s, but the network is at %s, so your miners are working on an old block."
+                              % ("{:,}".format(node["height"]), "{:,}".format(max(node.get("headers") or 0, node["height"]))),
+                              "Your node has caught up")
+    so = snap.get("solo45") or {}
+    if so.get("checked") and not so.get("up"):
+        out["pool:down"] = ("node", "Solo45 isn't responding",
+                            "The Solo45 pool isn't answering (%s). Your miners will switch to their backup pools." % so.get("error", "no reply"),
+                            "Solo45 is back")
+    elif so.get("up") and (so.get("proposal") or {}).get("ok") is False:
+        out["pool:check"] = ("node", "Your node rejected Solo45's test block",
+                             "Result: %s. A block found now might be invalid; point your miners at their backup pool until it's fixed."
+                             % so["proposal"].get("result"),
+                             "Solo45's test blocks pass again")
+    return out
+
+
+def notify_events(snap, memo):
+    """One-off events since the last look: [(kind, title, message, priority, tags)]. The first look only
+    takes note of what's already there, so nothing old is sent when the dashboard (re)starts."""
+    events, first = [], "found" not in memo
+    found = {"%s:%s" % (f["t"], f["msg"]): f["msg"] for f in snap.get("found") or []}
+    found.update({"miner:" + m["ip"]: "%s reports that it found a block!" % m.get("name")
+                  for m in snap["miners"] if m.get("block_found")})
+    reward = (snap.get("totals") or {}).get("reward_sats")
+    for key, msg in found.items():
+        if not first and key not in memo["found"]:
+            events.append(("block", "BLOCK FOUND!", msg.replace("Solo45: ", "") + (
+                ". Reward about %.4f BTC." % (reward / 1e8) if reward else ""), 5, "tada,moneybag"))
+    memo["found"] = set(found) | memo.get("found", set())
+    so = snap.get("solo45") or {}
+    best = so.get("best_ever") or {}
+    if so.get("up") and best.get("diff"):
+        if memo.get("best") and best["diff"] > memo["best"]:
+            nd = (snap.get("totals") or {}).get("netdiff")
+            events.append(("best", "New best share ever: %s" % fmt_diff(best["diff"]),
+                           "%s found a %s share%s." % (best.get("worker"), fmt_diff(best["diff"]),
+                                                      ", about 1/%s of a block" % "{:,}".format(round(nd / best["diff"])) if nd else ""),
+                           3, "star"))
+        memo["best"] = max(best["diff"], memo.get("best") or 0)
+    fb = (so.get("policy") or {}).get("fallback_height")
+    if fb and not first and fb != memo.get("fallback"):
+        events.append(("node", "A filtered job failed your node's check",
+                       "Block %s: Solo45 mined the node's own template instead, so nothing was lost, but the template "
+                       "policy has a bug. Please report it." % "{:,}".format(fb), 4, "warning"))
+    memo["fallback"] = fb or memo.get("fallback")
+    return events
+
+
+def notify_loop():
+    """Every 20 s: send alerts for new events, and for problems that last longer than after_min minutes
+    (with a short all-clear once they're over)."""
+    memo, active = {}, {}  # active: key -> {"since", "sent", "kind", "fixed", "retry"}
+    while True:
+        time.sleep(20)
+        try:
+            snap, now = snapshot(), time.time()
+            for ev in notify_events(snap, memo):
+                send_alert(*ev)
+            current = notify_conditions(snap)
+            for key in [k for k in active if k not in current]:
+                a = active.pop(key)
+                if a["sent"]:
+                    send_alert(a["kind"], a["fixed"], "All clear.", 2, "white_check_mark")
+            wait = max(1, int(CFG["notify"].get("after_min") or 10)) * 60
+            for key, (kind, title, message, fixed) in current.items():
+                a = active.setdefault(key, {"since": now, "sent": False, "kind": kind, "fixed": fixed, "retry": 0})
+                if not a["sent"] and now - a["since"] >= wait and now >= a["retry"]:
+                    a["sent"] = send_alert(kind, title, message, 4, "fire" if kind == "hot" else "warning")
+                    a["retry"] = now + 300  # if it didn't go out (alerts off, or ntfy unreachable), look again later
+        except Exception as e:
+            print("notify_loop error: %r" % e, flush=True)
+
+
+def notify_status():
+    c = CFG["notify"]
+    with lock:
+        log = list(S["notify_log"])
+    return {"on": c["on"], "server": c["server"], "topic": c["topic"], "after_min": c["after_min"],
+            "events": c["events"], "token_set": bool(read_ntfy_token()), "log": log}
+
+
+def save_notify_settings(data):
+    """Phone alert settings from the dashboard, saved in config.json (the token in its own file)."""
+    c, new = CFG["notify"], {}
+    if "on" in data:
+        new["on"] = bool(data["on"])
+    if "topic" in data:
+        topic = str(data["topic"] or "").strip()
+        if topic and not re.fullmatch(r"[A-Za-z0-9_-]{6,64}", topic):
+            return 400, {"error": "the topic can only use letters, numbers, - and _ (6 to 64 characters)"}
+        new["topic"] = topic
+    if "server" in data:
+        server = str(data["server"] or "").strip().rstrip("/") or "https://ntfy.sh"
+        if len(server) > 200 or not re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d+)?(/[A-Za-z0-9._~\-/]*)?", server):
+            return 400, {"error": "the server must be an address like https://ntfy.sh"}
+        new["server"] = server
+    if "after_min" in data:
+        try:
+            val = int(data["after_min"])
+        except (TypeError, ValueError):
+            return 400, {"error": "the waiting time must be a number of minutes"}
+        if not 1 <= val <= 240:
+            return 400, {"error": "the waiting time must be 1 to 240 minutes"}
+        new["after_min"] = val
+    if isinstance(data.get("events"), dict):
+        new["events"] = dict(c["events"], **{k: bool(v) for k, v in data["events"].items() if k in NOTIFY_KINDS})
+    if "click" in data:
+        click = str(data["click"] or "")
+        new["click"] = click if re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d+)?/?", click) else ""
+    token = str(data.get("token") or "").strip()
+    if token and not re.fullmatch(r"[A-Za-z0-9_.\-]{1,200}", token):
+        return 400, {"error": "that doesn't look like an ntfy access token"}
+    if new.get("on", c["on"]) and not new.get("topic", c["topic"]):
+        return 400, {"error": "choose a topic first"}
+    if token or data.get("clear_token"):
+        fd = os.open(NTFY_TOKEN_PATH, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(token)
+    if new:
+        save_config(new, "notify")
+        c.update(new)
+    return 200, dict(notify_status(), ok=True)
+
+
+def notify_test():
+    c = CFG["notify"]
+    if not c.get("topic"):
+        return 400, {"error": "save a topic first"}
+    t = snapshot()["totals"]
+    try:
+        ntfy_send("Solo45 test", "Alerts from Solo45 reach this phone. Right now: %d of %d miners hashing, %.0f TH/s."
+                  % (t["online"], t["count"], t["ths"]), 3, "wave")
+    except urllib.error.HTTPError as e:
+        return 502, {"error": "the ntfy server answered %d %s" % (e.code, e.reason)}
+    except Exception as e:
+        return 502, {"error": "couldn't reach %s: %s" % (c["server"], e)}
+    with lock:
+        S["notify_log"].insert(0, {"t": time.time(), "title": "Solo45 test"})
+        del S["notify_log"][10:]
+    return 200, {"ok": True}
+
+
 # ------------------------------------------------------------------- server
 
 INDEX = os.path.join(BASE, "index.html")
@@ -1076,6 +1305,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ai/status":
             st = assistant.status() if assistant else {"enabled": False, "unavailable": True}
             self.send(200, json.dumps(st).encode(), "application/json")
+        elif path == "/api/notify/status":
+            if not self.from_proxy():  # the topic is what lets someone read the alerts, so only behind the login
+                return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
+            self.send(200, json.dumps(notify_status()).encode(), "application/json")
         elif path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -1142,6 +1375,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/dash/settings":
             code, reply = save_dash_settings(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path in ("/api/notify/settings", "/api/notify/test"):
+            code, reply = save_notify_settings(data) if path.endswith("settings") else notify_test()
+            return self.send(code, json.dumps(reply).encode(), "application/json")
         if path.startswith("/api/ai/") and not assistant:
             return self.send(503, b'{"error":"The AI assistant is not installed."}', "application/json")
         if path == "/api/ai/key":
@@ -1179,17 +1415,18 @@ def main():
     S["blocks"] = [by_hash.get(b["hash"], b) for b in S["blocks"]]
     if S["blocks"]:
         S["tip"] = S["blocks"][0]
-    print("scanning Go Brrr log...", flush=True)
-    try:
-        with open(CFG["ckpool_log"], "r", errors="replace") as f:
-            for line in f:
-                on_ck_line(line.rstrip("\n"), False)
-    except OSError as e:
-        print("ckpool log:", e, flush=True)
-    for target, args in ((tail, (CFG["bitcoin_log"], on_node_line)),
-                         (tail, (CFG["ckpool_log"], on_ck_line)),
-                         (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
-                         (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ())):
+    loops = [(tail, (CFG["bitcoin_log"], on_node_line)), (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
+             (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ())]
+    if os.path.exists(CFG["ckpool_log"]):  # only when a ckpool-based pool (like Go Brrr) runs on this Umbrel
+        print("reading the ckpool log for Go Brrr timings...", flush=True)
+        try:
+            with open(CFG["ckpool_log"], "r", errors="replace") as f:
+                for line in f:
+                    on_ck_line(line.rstrip("\n"), False)
+        except OSError as e:
+            print("ckpool log:", e, flush=True)
+        loops.append((tail, (CFG["ckpool_log"], on_ck_line)))
+    for target, args in loops:
         threading.Thread(target=target, args=args, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", CFG["port"]), Handler)
     srv.daemon_threads = True

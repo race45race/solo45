@@ -514,6 +514,11 @@ class Pool:
         self.policy_cfg = policy.load_config(self.state.get("policy"))
         self.policy_heights = collections.OrderedDict()  # height -> what the policy did to its last job
         self.policy_fallback_height = None  # a filtered job failed the block check at this height
+        self.policy_log_path = os.path.join(data_dir, "policy-blocks.jsonl")
+        self.policy_file_lines = 0
+        self.policy_history = self.load_policy_history()  # finished blocks, last 30 days
+        for e in self.policy_history[-144:]:
+            self.policy_heights[e["height"]] = dict(e, saved=True)
         self.guard = stallguard.StallGuard(self.state.setdefault("stall_events", []))
         self.last_proposal = 0.0
 
@@ -813,7 +818,59 @@ class Pool:
         log.info("settings for %s: %s", name, override or "automatic")
         return 200, {"ok": True, "name": name, "override": override}
 
+    POLICY_KEEP = ("height", "at", "mode", "filtered", "txs", "fees", "skipped", "fees_skipped", "weight_skipped",
+                   "by_rule", "watched", "fees_watched", "watch_by_rule")
+
+    def load_policy_history(self):
+        """Finished blocks' policy numbers from policy-blocks.jsonl (one line per block), last 30 days."""
+        keep, cutoff = {}, time.time() - 30 * 86400
+        try:
+            with open(self.policy_log_path) as f:
+                for line in f:
+                    self.policy_file_lines += 1
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if e.get("at", 0) >= cutoff:
+                        keep[e["height"]] = e  # a later line for the same height (after a reorg) wins
+        except OSError:
+            pass
+        history = sorted(keep.values(), key=lambda e: e["height"])
+        if self.policy_file_lines > len(history):
+            self.write_policy_history(history)
+        return history
+
+    def write_policy_history(self, history):
+        try:
+            tmp = self.policy_log_path + ".tmp"
+            with open(tmp, "w") as f:
+                f.writelines(json.dumps(e) + "\n" for e in history)
+            os.replace(tmp, self.policy_log_path)
+            self.policy_file_lines = len(history)
+        except OSError as e:
+            log.warning("couldn't save the policy history: %s", e)
+
+    def save_policy_block(self, entry):
+        """Keep a finished block's numbers, so the dashboard's policy totals survive restarts and updates."""
+        entry["saved"] = True
+        e = {k: entry.get(k) for k in self.POLICY_KEEP}
+        cutoff = time.time() - 30 * 86400
+        self.policy_history = [x for x in self.policy_history if x["at"] >= cutoff] + [e]
+        if self.policy_file_lines > len(self.policy_history) + 144:  # about once a day, drop old lines from the file
+            self.write_policy_history(self.policy_history)
+            return
+        try:
+            with open(self.policy_log_path, "a") as f:
+                f.write(json.dumps(e) + "\n")
+            self.policy_file_lines += 1
+        except OSError as err:
+            log.warning("couldn't save the policy history: %s", err)
+
     def record_policy(self, report, mode, filtered):
+        last = next(reversed(self.policy_heights.values()), None)
+        if last and report["height"] > last["height"] and not last.get("saved"):
+            self.save_policy_block(last)  # a new block arrived, so the previous one's numbers are final
         entry = {"height": report["height"], "mode": mode, "filtered": filtered, "txs": report["txs"],
                  "skipped": report["skipped"], "fees": report["fees"], "fees_skipped": report["fees_skipped"],
                  "weight_skipped": report["weight_skipped"], "by_rule": report["by_rule"],
@@ -842,7 +899,14 @@ class Pool:
 
     def policy_view(self):
         recent = list(self.policy_heights.values())
-        done = recent[:-1]  # blocks already found by the network; the last one is still being mined
+        done = [e for e in recent if e.get("saved")]  # blocks already found by the network
+        current = recent[-1] if recent and not recent[-1].get("saved") else None  # the block being mined
+        now, periods = time.time(), []
+        for label, secs in (("24 hours", 86400), ("7 days", 7 * 86400), ("30 days", 30 * 86400)):
+            es = [e for e in self.policy_history if e["at"] >= now - secs]
+            periods.append({"label": label, "seconds": secs, "blocks": len(es),
+                            **{k: sum(e.get(k) or 0 for e in es) for k in ("txs", "fees", "skipped", "fees_skipped",
+                                                                          "watched", "fees_watched")}})
         totals = {"blocks": len(done), "skipped": sum(e["skipped"] for e in done),
                   "fees_skipped": sum(e["fees_skipped"] for e in done), "by_rule": {},
                   "watched": sum(e.get("watched", 0) for e in done),
@@ -854,7 +918,8 @@ class Pool:
                     t["txs"] += v["txs"]
                     t["fees"] += v["fees"]
         return {"mode": self.policy_cfg["mode"], "rules": self.policy_cfg["rules"], "names": policy.RULE_NAMES,
-                "current": recent[-1] if recent else None, "recent": done[-12:][::-1], "totals": totals,
+                "current": current, "recent": done[-12:][::-1], "totals": totals, "periods": periods,
+                "history_since": self.policy_history[0]["at"] if self.policy_history else None,
                 "fallback_height": self.policy_fallback_height}
 
     async def set_policy(self, data):

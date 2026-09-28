@@ -209,6 +209,26 @@ check("remembered difficulty (fresh used, 8-day-old ignored)", P.Pool.remembered
       and P.Pool.remembered_diff(_m, "B") is None and P.Pool.remembered_diff(_m, "C") is None)
 
 
+# 4e. template policy totals survive a restart
+import tempfile
+
+
+def fake_report(height, skipped):
+    return {"height": height, "txs": 100, "fees": 1000, "skipped": skipped, "fees_skipped": 10 * skipped, "weight_skipped": 0,
+            "by_rule": {"minfee": {"txs": skipped, "fees": 10 * skipped}}, "examples": [],
+            "watched": 0, "fees_watched": 0, "watch_by_rule": {}}
+
+
+_pdir = tempfile.mkdtemp(prefix="solo45-policy-")
+_p1 = P.Pool(cfg, data_dir=_pdir)
+for _h, _n in ((10, 1), (10, 2), (11, 3), (12, 4)):  # block 10 had two jobs; 12 is still being mined
+    _p1.record_policy(fake_report(_h, _n), "filter", True)
+_v1, _v2 = _p1.policy_view(), P.Pool(cfg, data_dir=_pdir).policy_view()  # the second pool is a restart
+check("policy totals survive a restart", _v1["periods"][0]["blocks"] == 2 and _v1["periods"][0]["skipped"] == 5
+      and _v1["current"]["height"] == 12 and _v2["periods"][0]["skipped"] == 5 and _v2["current"] is None
+      and [e["height"] for e in _v2["recent"]] == [11, 10])
+
+
 # 5. stratum round trip with an independently written miner
 def miner_header(notify, en1, en2, ntime, nonce, version):
     jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify
