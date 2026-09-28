@@ -152,12 +152,16 @@ class Assistant:
         self.cfg = cfg
         self.node_fn = node_fn
         self.now = now_fn or (lambda: datetime.now().astimezone())  # the owner's local time
-        notes = (cfg.get("notes") or "").strip()  # the owner's own facts about their fleet, from config.json
-        self.system = SYSTEM.replace("{NOTES}", "\nThe owner's notes about their setup:\n" + notes + "\n" if notes else "")
         self.snapshot_fn = snapshot_fn
         self.miner_fn = miner_fn
         self.history_fn = history_fn
         self.lock = threading.Lock()
+
+    @property
+    def system(self):
+        """The instructions plus the owner's current notes about their setup (edited on the dashboard)."""
+        notes = (self.cfg.get("notes") or "").strip()
+        return SYSTEM.replace("{NOTES}", "\nThe owner's notes about their setup:\n" + notes + "\n" if notes else "")
 
     # -- key, budget
 
@@ -226,6 +230,7 @@ class Assistant:
             "report": reports[-1] if reports else None,
             "report_hour": self.cfg["report_hour"],
             "report_every_days": self.cfg.get("report_every_days", 1),
+            "notes": self.cfg.get("notes", ""),
         }
 
     # -- tools

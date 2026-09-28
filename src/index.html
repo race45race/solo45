@@ -151,6 +151,8 @@ button.btn.small { font-size: 12px; padding: 3px 9px; }
 .proposal { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 8px; padding: 8px 10px;
   border: 1px dashed var(--solo45); border-radius: 8px; font-size: 13px; }
 .ai-form { display: flex; gap: 8px; align-items: flex-end; }
+#aiNotes { width: 100%; min-height: 110px; resize: vertical; font: inherit; font-size: 13px; line-height: 1.45; padding: 8px 10px;
+  border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .ai-form textarea { flex: 1; min-height: 42px; max-height: 160px; resize: vertical; font: inherit; padding: 8px 10px;
   border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .ai-foot { font-size: 12px; color: var(--muted); margin-top: 8px; display: flex; gap: 12px; flex-wrap: wrap; }
@@ -506,7 +508,13 @@ body.privacy .sensitive { filter: blur(6px); }
       <button class="btn small" id="aiSettingsSave" type="button">Save settings</button>
       <span class="muted" id="aiSettingsNote"></span>
     </div>
-    <div class="ai-foot" style="margin:0">Cheaper models cost less per question but give simpler answers. When a limit is reached the AI pauses until older spending is more than a week (or a month) old.</div>
+    <div class="ai-foot" style="margin:0 0 14px">Cheaper models cost less per question but give simpler answers. When a limit is reached the AI pauses until older spending is more than a week (or a month) old.</div>
+    <label for="aiNotes" style="display:block;font-size:13px;margin-bottom:6px"><b>Notes for the AI</b> <span class="muted">facts about your setup it should know: your backup pool, settings you chose on purpose, miners that are off on purpose</span></label>
+    <textarea id="aiNotes" maxlength="8000" placeholder="- Every miner's backup pool is …&#10;- Bitaxe4 runs hot by design (VR up to 90 °C is OK)"></textarea>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-top:6px">
+      <button class="btn small" id="aiNotesSave" type="button">Save notes</button>
+      <span class="muted" id="aiNotesNote">The AI reads these with every question and report.</span>
+    </div>
   </section>
 
   <section class="card" id="backupCard" style="margin-bottom:12px">
@@ -1328,6 +1336,7 @@ function fillAiSettings(st) {
   $("aiEvery").value = String(st.report_every_days);
   $("aiHour").innerHTML = Array.from({length: 24}, (_, h) => `<option value="${h}">${String(h).padStart(2, "0")}:00</option>`).join("");
   $("aiHour").value = String(st.report_hour);
+  $("aiNotes").value = st.notes || "";
   aiSettingsFilled = true;
 }
 
@@ -1362,6 +1371,10 @@ $("aiSettingsSave").addEventListener("click", async () => {
   if (!(body.weekly_cap_usd >= 0) || !(body.monthly_cap_usd >= 0)) { $("aiSettingsNote").textContent = "Enter both limits in dollars."; return; }
   const j = await aiPost("/api/ai/settings", body, "aiSettingsNote");
   if (j) { $("aiSettingsNote").textContent = "Saved"; aiSettingsFilled = false; aiStatus(); }
+});
+$("aiNotesSave").addEventListener("click", async () => {
+  const j = await aiPost("/api/ai/settings", {notes: $("aiNotes").value}, "aiNotesNote");
+  if (j) { $("aiNotesNote").textContent = "Saved: the AI uses these from the next question."; aiSettingsFilled = false; aiStatus(); }
 });
 
 function proposalHtml(p, id) {

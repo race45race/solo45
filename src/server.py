@@ -1025,6 +1025,11 @@ def save_ai_settings(data):
         if not 0 <= val <= 23:
             return 400, {"error": "the report hour must be 0 to 23"}
         new["report_hour"] = val
+    if "notes" in data:  # the owner's facts about their setup; the assistant reads them with every question
+        notes = str(data["notes"] or "").strip()
+        if len(notes) > 8000:
+            return 400, {"error": "the notes can be up to 8,000 characters"}
+        new["notes"] = notes
     if not new:
         return 400, {"error": "nothing to save"}
     save_config(new, "ai")
