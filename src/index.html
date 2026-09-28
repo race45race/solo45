@@ -125,6 +125,7 @@ td.first, th.first { padding-left: 0; }
 .blocks td { font-size: 12.5px; }
 .pol-rules { display: grid; gap: 6px; font-size: 13px; }
 .pol-rules label { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+select { max-width: 100%; }  /* long option texts must not make the page wider than a phone screen */
 .nt-list { display: grid; gap: 6px; font-size: 13px; }
 .nt-list label { display: block; }
 .nt-list input[type=number] { font: inherit; font-size: 12.5px; padding: 2px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel-2); color: inherit; }
@@ -1524,7 +1525,8 @@ function connect() {
 }
 fetch("api/state").then(r => r.json()).then(s => render(hide(s))).catch(() => {});
 fetch("api/shares").then(r => r.json()).then(list => addShares(hide(list), false)).catch(() => {});
-connect();
+if (!/[?&]static/.test(location.search)) connect();  // ?static: one snapshot, no live stream (for screenshot tools)
+else setLive(true, "live");
 
 // ---- backup and restore
 $("bkSave").addEventListener("click", async () => {
