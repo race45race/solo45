@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.13"
+version: "0.1.14"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Phone alerts: get a push notification through the free ntfy app when a block is found, you hit a new best share, a miner goes offline, switches to its backup pool or runs hot, or your node or Solo45 has trouble. The template policy now keeps its totals across restarts (last 24 hours, 7 days and 30 days), and the dashboard only shows other pools' timings while you use them.
+  Steadier share difficulty: Solo45 now measures each miner over 10 minutes (or 40 shares) and only changes the difficulty when it is off by more than half, so it no longer jumps every few minutes. A new or restarted miner still settles within a minute or two.
 
 developer: race45race
 website: https://github.com/race45race/solo45
