@@ -240,6 +240,7 @@ class Worker:
         self.en1 = pool.next_extranonce1()
         self.diff = pool.cfg["start_diff"]
         self.remembered = False  # started at the difficulty remembered from its last connection
+        self.switches_at_once = False  # uses a new difficulty straight away, not only from its next job
         self.job_diff = {}
         self.subscribed = self.authorized = False
         self.user = self.name = self.address = self.agent = ""
@@ -427,9 +428,7 @@ class Worker:
         now = time.time()
         self.accepted += 1
         self.last_share = now
-        # Credit the share at the difficulty of the job it was found on: right after a difficulty change the
-        # miner still works on the old job, so crediting the (lower) new difficulty undercounts its hashrate.
-        credit = self.job_diff.get(job.id, self.diff)
+        credit = self.share_credit(job.id, share_diff)
         self.vd_count += 1
         self.vd_work += credit
         self.shares.append((now, credit))
@@ -439,16 +438,28 @@ class Worker:
         pool.share_accepted(self, credit, share_diff, now, block=h <= job.target)
         return True
 
+    def share_credit(self, job_id, share_diff):
+        """The difficulty an accepted share counts at: the one the miner was really working to. After a change
+        some miners finish the job they have at its old difficulty, others switch at once. A share below its
+        job's own difficulty shows this miner switches at once, so from then on its shares count at the current
+        difficulty; until then they count at their job's. (Counting at the job's difficulty for a miner that
+        switches at once overcounts it right after every decrease, up to 8x.)"""
+        job_diff = self.job_diff.get(job_id, self.diff)
+        if share_diff < job_diff * (1 - 1e-9):
+            self.switches_at_once = True
+        return self.diff if self.switches_at_once else job_diff
+
     def vardiff(self, now):
-        """Retarget after 40 shares or 10 minutes, or sooner when at most one share came in the time 8 should
-        have (the difficulty is far too high). Changes under x1.5 either way are left alone: even 40 shares
-        wobble ~15% from luck, and shorter windows had the difficulty jumping every few minutes."""
+        """Retarget after 40 shares or 10 minutes, or sooner when no share at all came in the time 12 should
+        have (the difficulty is far too high, e.g. a new miner). Changes under x1.5 either way are left alone:
+        even 40 shares wobble ~15% from luck, and shorter windows had the difficulty jumping every few minutes."""
         o = self.override()
         if o.get("diff"):
             return None
         target = o.get("share_seconds") or self.pool.cfg["share_seconds"]
         elapsed = now - self.vd_start
-        far_too_high = self.vd_count <= 1 and elapsed >= max(120, 8 * target)
+        # a short pause (one share in 2 minutes happened a few times a day) must not cut the difficulty
+        far_too_high = self.vd_count == 0 and elapsed >= max(180, 12 * target)
         if self.vd_count < 40 and elapsed < 600 and not far_too_high:
             return None
         if self.vd_count:
@@ -466,7 +477,8 @@ class Worker:
     def snapshot(self, now):
         return {
             "name": self.name, "ip": self.ip, "agent": self.agent, "address": self.address,
-            "diff": self.diff, "accepted": self.accepted, "rejected": dict(self.rejected),
+            "diff": self.diff, "switches_at_once": self.switches_at_once,
+            "accepted": self.accepted, "rejected": dict(self.rejected),
             "best": self.best, "last_share": self.last_share, "connected": self.connected,
             "override": self.override(),
             "hashrate_5m": hashrate(self.shares, min(300, max(now - self.connected, 60)), now),

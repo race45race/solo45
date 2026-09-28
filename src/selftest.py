@@ -238,7 +238,17 @@ def vd(count, elapsed, diff=1000.0, o=None):
 
 
 check("vardiff windows and band", vd(10, 150) is None and vd(40, 450) is None and vd(40, 200) == 3000
-      and vd(0, 130) == 250 and vd(1, 90) is None and vd(40, 200, o={"diff": 500}) is None and vd(20, 600) == 500)
+      and vd(0, 130) is None and vd(0, 185) == 250 and vd(1, 300) is None and vd(40, 200, o={"diff": 500}) is None
+      and vd(20, 600) == 500)
+
+# a share counts at the difficulty the miner really used: the job's, until the miner shows it switches at once
+_sw = types.SimpleNamespace(diff=1000.0, job_diff={"old": 8000.0, "new": 1000.0}, switches_at_once=False)
+_credits = [P.Worker.share_credit(_sw, "old", 9000.0), P.Worker.share_credit(_sw, "old", 1500.0),
+            P.Worker.share_credit(_sw, "old", 9000.0), P.Worker.share_credit(_sw, "new", 1200.0)]
+_st = types.SimpleNamespace(diff=1000.0, job_diff={"old": 8000.0}, switches_at_once=False)
+_steady = [P.Worker.share_credit(_st, "old", d) for d in (8100.0, 20000.0, 8000.0)]
+check("share credit follows the difficulty the miner used", _credits == [8000.0, 1000.0, 1000.0, 1000.0]
+      and _sw.switches_at_once and _steady == [8000.0] * 3 and not _st.switches_at_once, "(%s, %s)" % (_credits, _steady))
 
 
 # 4g. settings backup: export from one pool, restore into a fresh one
