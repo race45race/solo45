@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.14"
+version: "0.1.15"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Steadier share difficulty: Solo45 now measures each miner over 10 minutes (or 40 shares) and only changes the difficulty when it is off by more than half, so it no longer jumps every few minutes. A new or restarted miner still settles within a minute or two.
+  A home-screen widget (hashrate, miners online, best share today, block odds), backup and restore of all your settings in one file, and a screenshot mode that hides your payout address and IP addresses. New blocks now come straight from your node's ZMQ feed, so Solo45 no longer needs read access to the node's data folder. "Best share today" and AI reports now follow your own time zone. Solo45 is now MIT licensed.
 
 developer: race45race
 website: https://github.com/race45race/solo45
