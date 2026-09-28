@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.16"
+version: "0.1.17"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  The dashboard now fits phone screens: two long dropdown menus made the page wider than a phone, so cards were cut off at the right edge.
+  More accurate hashrate and steadier difficulty: Solo45 now counts each share at the difficulty the miner really used (some miners switch to a new difficulty at once, others only from their next job), and only cuts a miner's difficulty after 3 minutes without any shares, instead of after a short pause.
 
 developer: race45race
 website: https://github.com/race45race/solo45
