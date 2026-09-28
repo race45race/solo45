@@ -440,21 +440,25 @@ class Worker:
         return True
 
     def vardiff(self, now):
+        """Retarget after 40 shares or 10 minutes, or sooner when at most one share came in the time 8 should
+        have (the difficulty is far too high). Changes under x1.5 either way are left alone: even 40 shares
+        wobble ~15% from luck, and shorter windows had the difficulty jumping every few minutes."""
         o = self.override()
         if o.get("diff"):
             return None
+        target = o.get("share_seconds") or self.pool.cfg["share_seconds"]
         elapsed = now - self.vd_start
-        if self.vd_count < 20 and elapsed < 120:
+        far_too_high = self.vd_count <= 1 and elapsed >= max(120, 8 * target)
+        if self.vd_count < 40 and elapsed < 600 and not far_too_high:
             return None
         if self.vd_count:
-            target = o.get("share_seconds") or self.pool.cfg["share_seconds"]
             ideal = self.vd_work * target / elapsed
         else:
             ideal = self.diff / 4
         ideal = min(max(ideal, self.diff / 8), self.diff * 16)
         ideal = min(MAX_DIFF, max(self.pool.cfg["min_diff"], float("%.3g" % ideal)))
         self.vd_start, self.vd_count, self.vd_work = now, 0, 0.0
-        if abs(ideal / self.diff - 1) < 0.3:
+        if 1 / 1.5 < ideal / self.diff < 1.5:
             return None
         self.diff = ideal
         return ideal

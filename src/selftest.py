@@ -229,6 +229,18 @@ check("policy totals survive a restart", _v1["periods"][0]["blocks"] == 2 and _v
       and [e["height"] for e in _v2["recent"]] == [11, 10])
 
 
+# 4f. vardiff windows: 40 shares or 10 minutes, x1.5 band, a quick drop when shares stop coming
+def vd(count, elapsed, diff=1000.0, o=None):
+    o = {"share_seconds": 15} if o is None else o
+    w = types.SimpleNamespace(diff=diff, vd_start=100.0, vd_count=count, vd_work=count * diff, override=lambda: o,
+                              pool=types.SimpleNamespace(cfg={"share_seconds": 5, "min_diff": 1}))
+    return P.Worker.vardiff(w, 100.0 + elapsed)
+
+
+check("vardiff windows and band", vd(10, 150) is None and vd(40, 450) is None and vd(40, 200) == 3000
+      and vd(0, 130) == 250 and vd(1, 90) is None and vd(40, 200, o={"diff": 500}) is None and vd(20, 600) == 500)
+
+
 # 5. stratum round trip with an independently written miner
 def miner_header(notify, en1, en2, ntime, nonce, version):
     jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify
