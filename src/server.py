@@ -23,6 +23,9 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from zoneinfo import ZoneInfo
+
+import zmqsub
 
 HOME = os.path.expanduser("~")
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -56,8 +59,10 @@ CFG = {
     "rpc_cookie": NODE_DIR + "/.cookie",
     "rpc_user": "",  # when set, used instead of the cookie file
     "rpc_pass": "",
+    "zmq_hashblock": "",  # e.g. tcp://10.21.21.8:28334: new blocks straight from the node, no log reading needed
     "kwh_price": 0.12,  # price per kWh for the electricity cost figures; set on the dashboard
     "currency": "$",    # symbol shown with costs
+    "timezone": "",     # the user's time zone, taken from their browser, e.g. America/Chicago ("" = the server's)
     "ai": {"model": "claude-opus-5", "weekly_cap_usd": 2.0, "monthly_cap_usd": 8.0, "report_hour": 8,
            "report_every_days": 3},
     # phone alerts through ntfy (https://ntfy.sh or your own server); off until the user turns them on
@@ -73,7 +78,8 @@ if os.path.exists(CFG_PATH):
     CFG["notify"].update(_notify)
     CFG.update(_user)
 for _var, _key, _kind in (("SOLO45_DASH_PORT", "port", int), ("BITCOIN_RPC_URL", "rpc_url", str),
-                          ("BITCOIN_RPC_USER", "rpc_user", str), ("BITCOIN_RPC_PASS", "rpc_pass", str)):
+                          ("BITCOIN_RPC_USER", "rpc_user", str), ("BITCOIN_RPC_PASS", "rpc_pass", str),
+                          ("BITCOIN_ZMQ_HASHBLOCK", "zmq_hashblock", str)):
     if os.environ.get(_var):  # environment settings (used by the Umbrel app) win over config.json
         CFG[_key] = _kind(os.environ[_var])
 
@@ -128,6 +134,16 @@ def note_switch(blk, ip, t):
 
 def now_ms():
     return int(time.time() * 1000)
+
+
+def local_now():
+    """Now on the user's clock, so "today" and "this month" start at their midnight (the app itself runs on UTC)."""
+    if CFG.get("timezone"):
+        try:
+            return datetime.now(ZoneInfo(CFG["timezone"]))
+        except Exception:
+            pass
+    return datetime.now().astimezone()
 
 
 def load_json(path, default):
@@ -214,14 +230,25 @@ def iso_ms(s):
 
 def on_node_line(line, live):
     m = UPDATETIP.search(line)
-    if not m:
-        return
-    height, bhash = int(m.group(3)), m.group(2)
+    if m:
+        add_block(int(m.group(3)), m.group(2), now_ms() if live else iso_ms(m.group(1)), iso_ms(m.group(5)), live)
+
+
+def on_new_tip(bhash, seen_ms, live=True):
+    """A new best block announced by the node (ZMQ or RPC polling)."""
+    with lock:
+        if S["tip"] and S["tip"]["hash"] == bhash:
+            return
+    hdr = rpc("getblockheader", bhash)
+    add_block(hdr["height"], bhash, seen_ms, hdr["time"] * 1000, live)
+
+
+def add_block(height, bhash, seen_ms, mined_ms, live):
     blk = {
         "height": height,
         "hash": bhash,
-        "seen_ms": now_ms() if live else iso_ms(m.group(1)),
-        "mined_ms": iso_ms(m.group(5)),
+        "seen_ms": seen_ms,
+        "mined_ms": mined_ms,
         "live": live,
         "gobrrr_ms": None,
         "solo45_ms": None,
@@ -323,7 +350,7 @@ def solo45_loop():
                 with lock:
                     S["shares"].extend(new)
                     # Solo45 sees every share, so its miners' best of the day is exact
-                    today = datetime.now().strftime("%Y-%m-%d")
+                    today = local_now().strftime("%Y-%m-%d")
                     if S["daily"].get("date") == today:
                         for sh in new:
                             rec = S["daily"]["miners"].get(sh["worker"])
@@ -376,6 +403,56 @@ def rpc(method, *params):
     if reply.get("error"):
         raise RuntimeError(reply["error"])
     return reply["result"]
+
+
+def zmq_loop(url):
+    """New blocks the moment the node connects them, from its ZMQ feed (zmqpubhashblock)."""
+    host, port = url.replace("tcp://", "").rsplit(":", 1)
+    while True:
+        sub = None
+        try:
+            sub = zmqsub.ZmqSub(host, int(port))
+            print("listening for new blocks on %s" % url, flush=True)
+            while True:
+                parts = sub.recv()
+                if len(parts) >= 2 and parts[0] == b"hashblock":
+                    on_new_tip(parts[1].hex(), now_ms())
+        except Exception as e:
+            print("block feed (%s): %s; retrying in 5 s" % (url, e), flush=True)
+        finally:
+            if sub:
+                sub.close()
+        time.sleep(5)
+
+
+def tip_poll_loop():
+    """Without ZMQ or the node's log: ask the node for its best block every second."""
+    first = True
+    while True:
+        try:
+            on_new_tip(rpc("getbestblockhash"), now_ms(), live=not first)  # the first one wasn't seen arriving
+            first = False
+        except Exception:
+            pass
+        time.sleep(1)
+
+
+def node_status():
+    """Bitcoin Core's state for the assistant, straight from RPC (no log files needed)."""
+    bc, net, mp = rpc("getblockchaininfo"), rpc("getnetworkinfo"), rpc("getmempoolinfo")
+    peers = rpc("getpeerinfo")
+    return {
+        "blocks": bc["blocks"], "headers": bc["headers"], "initial_block_download": bc["initialblockdownload"],
+        "verification_progress": bc["verificationprogress"], "size_on_disk_gb": round(bc.get("size_on_disk", 0) / 1e9, 1),
+        "pruned": bc.get("pruned"), "version": net["subversion"], "relay_fee_sat_vb": net["relayfee"] * 1e5,
+        "connections_in": net["connections_in"], "connections_out": net["connections_out"],
+        "mempool": {"txs": mp["size"], "mb": round(mp["bytes"] / 1e6, 2), "usage_mb": round(mp["usage"] / 1e6, 1),
+                    "max_mb": round(mp["maxmempool"] / 1e6), "min_fee_sat_vb": mp["mempoolminfee"] * 1e5},
+        "peers": [{"id": p["id"], "inbound": p["inbound"], "type": p.get("connection_type"), "version": p.get("subver"),
+                   "synced_blocks": p.get("synced_blocks"), "ping_ms": round(p["pingtime"] * 1000) if p.get("pingtime") else None,
+                   "blocks_in_flight": p.get("inflight")} for p in peers[:40]],
+        "other_chain_tips": [t for t in rpc("getchaintips") if t["status"] != "active"][:5],
+    }
 
 
 def node_loop():
@@ -588,7 +665,7 @@ def track_daily_best(ip, result, t):
     recorded when that number goes up while we're watching. For miners on Solo45 the
     live share feed (solo45_loop) gives the exact value, even below that old record.
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = local_now().strftime("%Y-%m-%d")
     if S["daily"].get("date") != today:
         archive_day()
         S["daily"] = {"date": today, "since": t, "miners": {}}  # bests and hashes both count from "since"
@@ -824,6 +901,7 @@ def snapshot():
                 "cost_day": power / 1000 * 24 * CFG["kwh_price"],
                 "kwh_price": CFG["kwh_price"],
                 "currency": CFG["currency"],
+                "timezone": CFG["timezone"],
                 "j_per_th": power / total if total else None,
                 "online": len(up),
                 "count": len(miners),
@@ -883,11 +961,21 @@ def save_dash_settings(data):
         if not 1 <= len(cur) <= 3 or any(c in cur for c in "<>&\"'"):
             return 400, {"error": "the currency symbol must be 1 to 3 characters, like $ or €"}
         new["currency"] = cur
+    if "timezone" in data:  # sent by the page from the browser's own setting
+        tz = str(data["timezone"] or "")
+        try:
+            if tz and (len(tz) > 64 or ".." in tz or ZoneInfo(tz) is None):
+                raise ValueError
+        except Exception:
+            return 400, {"error": "unknown time zone"}
+        new["timezone"] = tz
     if not new:
         return 400, {"error": "nothing to save"}
     save_config(new)
     CFG.update(new)
-    return 200, {"ok": True, "kwh_price": CFG["kwh_price"], "currency": CFG["currency"]}
+    if "timezone" in new:
+        print("time zone set to %s" % (new["timezone"] or "the server's"), flush=True)
+    return 200, {"ok": True, "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "timezone": CFG["timezone"]}
 
 
 def save_config(new, section=None):
@@ -974,7 +1062,7 @@ def post_json(url, data, timeout=5):
 
 def track_work(ths, dt):
     """Add the fleet's hashes to this month's total (call with lock held)."""
-    month = datetime.now().strftime("%Y-%m")
+    month = local_now().strftime("%Y-%m")
     w = S["work"]
     if w.get("month") != month:
         prev = {"month": w["month"], "hashes": w["hashes"]} if w.get("month") else w.get("prev")
@@ -1256,6 +1344,101 @@ def notify_test():
     return 200, {"ok": True}
 
 
+# ------------------------------------------------------------ home-screen widget
+
+def short_num(n):
+    for unit, v in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if n >= v:
+            return ("%.1f" % (n / v)).rstrip("0").rstrip(".") + unit
+    return "%d" % n
+
+
+def widget():
+    """The umbrelOS home-screen widget (type four-stats): hashrate, miners, today's best share, block odds."""
+    snap = snapshot()
+    t, fleet = snap["totals"], snap["best_today"]["fleet"]
+    ths = t["ths"] or 0
+    rate = ("%.2f" % (ths / 1000), "PH/s") if ths >= 1000 else ("%.3g" % ths if ths else "0", "TH/s")
+    best = fmt_diff(fleet["best"]).split() + [""] if fleet.get("best") else ["-", ""]
+    p_day = (t.get("odds") or {}).get("p_day")
+    return {"type": "four-stats", "refresh": "30s", "link": "", "items": [
+        {"title": "Hashrate", "text": rate[0], "subtext": rate[1]},
+        {"title": "Miners", "text": "%d/%d" % (t["online"], t["count"]), "subtext": "online"},
+        {"title": "Best today", "text": best[0], "subtext": best[1]},
+        {"title": "Block odds", "text": "1/" + short_num(1 / p_day) if p_day else "-", "subtext": "per day"},
+    ]}
+
+
+# ---------------------------------------------------------- backup and restore
+
+BACKUP_AI_KEYS = ("model", "weekly_cap_usd", "monthly_cap_usd", "report_every_days", "report_hour", "notes")
+BACKUP_NOTIFY_KEYS = ("on", "server", "topic", "after_min", "events")
+
+
+def solo45_get(path, timeout=5):
+    headers = {"X-Solo45-Token": os.environ["SOLO45_API_TOKEN"]} if os.environ.get("SOLO45_API_TOKEN") else {}
+    with urllib.request.urlopen(urllib.request.Request(SOLO45 + path, headers=headers), timeout=timeout) as r:
+        return json.load(r)
+
+
+def make_backup():
+    """Everything the user set up, in one file: Solo45's settings plus the dashboard's. No secrets (AI key,
+    ntfy token), no statistics or logs."""
+    return {
+        "solo45_backup": 1,
+        "made": local_now().isoformat(timespec="seconds"),
+        "pool": solo45_get("/api/export"),
+        "dashboard": {
+            "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
+            "ai": {k: CFG["ai"][k] for k in BACKUP_AI_KEYS if k in CFG["ai"]},
+            "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
+        },
+    }
+
+
+def restore_backup(data):
+    """Load a file made by make_backup. Each part goes through the same checks as a change on the dashboard;
+    a part that fails is reported and the rest still applies."""
+    if not isinstance(data, dict) or data.get("solo45_backup") != 1:
+        return 400, {"error": "that isn't a Solo45 settings backup"}
+    done, errors = [], []
+
+    def step(label, result):
+        code, reply = result
+        (done.append(label) if code == 200 else errors.append("%s: %s" % (label, reply.get("error", code))))
+
+    dash = data.get("dashboard") or {}
+    if "kwh_price" in dash or "currency" in dash:
+        step("electricity price", save_dash_settings({k: dash[k] for k in ("kwh_price", "currency") if k in dash}))
+    lists = {k: [ip for ip in dash.get(k) or [] if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", str(ip))] for k in ("miners", "ignore")}
+    if any(lists.values()):
+        save_config(lists)
+        CFG.update(lists)
+        done.append("miner list")
+    ai_part = {k: v for k, v in (dash.get("ai") or {}).items() if k in BACKUP_AI_KEYS}
+    notes = ai_part.pop("notes", None)
+    if ai_part and assistant:
+        step("AI settings", save_ai_settings(ai_part))
+    if isinstance(notes, str) and len(notes) <= 8000:
+        save_config({"notes": notes}, "ai")
+        CFG["ai"]["notes"] = notes
+    if dash.get("notify"):
+        step("phone alerts", save_notify_settings({k: v for k, v in dash["notify"].items() if k in BACKUP_NOTIFY_KEYS}))
+    if data.get("pool"):
+        try:
+            code, reply = post_json(SOLO45 + "/api/restore", data["pool"], timeout=30)
+        except OSError as e:
+            code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
+        if code == 200:
+            done.extend(reply.get("restored", []))
+            errors.extend(reply.get("errors", []))
+        else:
+            errors.append("Solo45: %s" % reply.get("error", code))
+    print("settings restored from a backup: %s%s" % (", ".join(done) or "nothing",
+                                                     "; problems: " + "; ".join(errors) if errors else ""), flush=True)
+    return 200, {"ok": not errors, "restored": done, "errors": errors}
+
+
 # ------------------------------------------------------------------- server
 
 INDEX = os.path.join(BASE, "index.html")
@@ -1305,6 +1488,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/ai/status":
             st = assistant.status() if assistant else {"enabled": False, "unavailable": True}
             self.send(200, json.dumps(st).encode(), "application/json")
+        elif path == "/api/widget":  # fetched by umbrelOS for the home-screen widget
+            self.send(200, json.dumps(widget()).encode(), "application/json")
+        elif path == "/api/backup":
+            if not self.from_proxy():  # it holds the payout address and alert topic
+                return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
+            try:
+                body = json.dumps(make_backup(), indent=1).encode()
+            except Exception as e:
+                return self.send(502, json.dumps({"error": "couldn't read Solo45's settings: %s" % e}).encode(), "application/json")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Disposition", 'attachment; filename="solo45-settings-%s.json"' % local_now().strftime("%Y-%m-%d"))
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
         elif path == "/api/notify/status":
             if not self.from_proxy():  # the topic is what lets someone read the alerts, so only behind the login
                 return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
@@ -1357,7 +1556,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
-            length = min(int(self.headers.get("Content-Length") or 0), 20000)
+            length = min(int(self.headers.get("Content-Length") or 0), 200000 if path == "/api/restore" else 20000)
             data = json.loads(self.rfile.read(length) or b"{}")
         except ValueError:
             return self.send(400, b'{"error":"bad request"}', "application/json")
@@ -1374,6 +1573,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/settings":
             code, reply = save_dash_settings(data)
+            return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/restore":
+            code, reply = restore_backup(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path in ("/api/notify/settings", "/api/notify/test"):
             code, reply = save_notify_settings(data) if path.endswith("settings") else notify_test()
@@ -1398,7 +1600,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     global assistant
     if ai:
-        assistant = ai.Assistant(CFG["ai"], snapshot, miner_raw, history_sample)
+        assistant = ai.Assistant(CFG["ai"], snapshot, miner_raw, history_sample, node_status, local_now)
         threading.Thread(target=assistant.report_loop, daemon=True).start()
     S["history"] = load_json(HISTORY_PATH, [])[-2880:]
     S["daily"] = load_json(DAILY_PATH, {})
@@ -1408,14 +1610,26 @@ def main():
     if "since" not in S["daily"]:
         S["daily"] = {}  # an early version without a start time: start today's board fresh
     saved = load_json(BLOCKS_PATH, [])
-    for line in read_tail_lines(CFG["bitcoin_log"], 4 * 1024 * 1024):
-        on_node_line(line, False)
-    S["blocks"].sort(key=lambda b: b["height"], reverse=True)
-    by_hash = {b["hash"]: b for b in saved}
-    S["blocks"] = [by_hash.get(b["hash"], b) for b in S["blocks"]]
-    if S["blocks"]:
-        S["tip"] = S["blocks"][0]
-    loops = [(tail, (CFG["bitcoin_log"], on_node_line)), (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
+    have_log = os.path.exists(CFG["bitcoin_log"])  # only when the node's folder is mounted (not in the Umbrel app)
+    if have_log:
+        for line in read_tail_lines(CFG["bitcoin_log"], 4 * 1024 * 1024):
+            on_node_line(line, False)
+    blocks = {b["hash"]: b for b in S["blocks"]}
+    blocks.update({b["hash"]: b for b in saved})  # saved blocks keep their live switch timings
+    S["blocks"] = sorted(blocks.values(), key=lambda b: b["height"], reverse=True)[:50]
+    S["tip"] = S["blocks"][0] if S["blocks"] else None
+    # new blocks: the node's ZMQ feed if there is one, else its log, else asking it every second
+    if CFG["zmq_hashblock"]:
+        try:
+            on_new_tip(rpc("getbestblockhash"), now_ms(), live=False)  # catch up with blocks found while we were down
+        except Exception as e:
+            print("node not answering yet:", e, flush=True)
+        feed = (zmq_loop, (CFG["zmq_hashblock"],))
+    elif have_log:
+        feed = (tail, (CFG["bitcoin_log"], on_node_line))
+    else:
+        feed = (tip_poll_loop, ())
+    loops = [feed, (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
              (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ())]
     if os.path.exists(CFG["ckpool_log"]):  # only when a ckpool-based pool (like Go Brrr) runs on this Umbrel
         print("reading the ckpool log for Go Brrr timings...", flush=True)

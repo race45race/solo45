@@ -194,6 +194,7 @@ button.btn.small { font-size: 12px; padding: 3px 9px; }
 .feed-head { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 footer { margin-top: 20px; font-size: 12px; color: var(--faint); display: flex; gap: 16px; flex-wrap: wrap; }
 footer button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 2px 8px; font: inherit; cursor: pointer; }
+body.privacy .sensitive { filter: blur(6px); }
 
 @media (max-width: 1000px) {
   .kpis { grid-template-columns: repeat(2, 1fr); }
@@ -330,7 +331,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
     <div class="ai-foot" style="margin:0 0 14px" id="guardFoot">If your node has seen a new block announced but one peer still hasn't sent it after this long, Solo45 disconnects that peer so the node gets the block elsewhere. Bitcoin Core on its own waits 10 minutes, which your miners would spend on an old block.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="payAddr">Payout address:</label>
-      <input type="text" id="payAddr" autocomplete="off" spellcheck="false" style="width:min(420px,100%)">
+      <input type="text" id="payAddr" class="sensitive" autocomplete="off" spellcheck="false" style="width:min(420px,100%)">
       <button class="btn small" id="paySave" type="button">Save</button>
       <span class="muted" id="payNote"></span>
     </div>
@@ -395,7 +396,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
     <h2>Phone alerts <span class="muted">push notifications through the free ntfy app, no account needed</span></h2>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:8px">
       <label for="ntTopic">Topic:</label>
-      <input type="text" id="ntTopic" maxlength="64" autocomplete="off" spellcheck="false" style="width:230px">
+      <input type="text" id="ntTopic" class="sensitive" maxlength="64" autocomplete="off" spellcheck="false" style="width:230px">
       <button class="btn small" id="ntNew" type="button">New random topic</button>
     </div>
     <div class="nt-list" style="margin-bottom:8px">
@@ -422,7 +423,7 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
       <span class="muted" id="ntNote"></span>
     </div>
     <div class="feed-head" id="ntLog" style="margin-top:8px"></div>
-    <div class="ai-foot" id="ntHelp"><span>1. Install <b>ntfy</b> on your phone (Android or iPhone). 2. In the app, tap + and subscribe to your topic<span id="ntSub"></span>. 3. Save here and press Send test. Anyone who knows the topic can read your alerts, so keep the random name private. Alerts only contain miner names, block heights and share sizes, never your address.</span></div>
+    <div class="ai-foot" id="ntHelp"><span>1. Install <b>ntfy</b> on your phone (Android or iPhone). 2. In the app, tap + and subscribe to your topic<span id="ntSub" class="sensitive"></span>. 3. Save here and press Send test. Anyone who knows the topic can read your alerts, so keep the random name private. Alerts only contain miner names, block heights and share sizes, never your address.</span></div>
   </section>
 
   <section class="card" style="margin-bottom:12px">
@@ -507,9 +508,21 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
     <div class="ai-foot" style="margin:0">Cheaper models cost less per question but give simpler answers. When a limit is reached the AI pauses until older spending is more than a week (or a month) old.</div>
   </section>
 
+  <section class="card" id="backupCard" style="margin-bottom:12px">
+    <h2>Backup &amp; restore <span class="muted">all your settings in one file, for a reinstall or a new Umbrel</span></h2>
+    <div class="setting-ctl" style="flex-wrap:wrap">
+      <button class="btn small" id="bkSave" type="button">Download settings</button>
+      <button class="btn small" id="bkLoad" type="button">Restore from a file…</button>
+      <input type="file" id="bkFile" accept=".json,application/json" hidden>
+      <span class="muted" id="bkNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:6px 0 0"><span>The file holds your payout address, per-miner difficulty, template policy, job and stall-guard timing, electricity price, AI limits and notes, and phone-alert settings including the topic, so keep it private. It doesn't include your AI key, an ntfy access token, statistics or logs. Restoring adds and replaces those settings; miners that aren't in the file keep theirs.</span></div>
+  </section>
+
   <footer>
     <span>Updates live from your node, Solo45 and each miner. Changes made here only affect Solo45, never the miners' own settings.</span>
     <span id="updated"></span>
+    <button id="shotBtn" type="button" title="Hides your payout address, IP addresses and alert topic, so screenshots are safe to share">Screenshot mode</button>
     <button id="themeBtn" type="button">Theme</button>
   </footer>
 </div>
@@ -517,6 +530,36 @@ footer button { background: none; border: 1px solid var(--line); color: var(--mu
 <script>
 const $ = id => document.getElementById(id);
 let state = null, lastTipHash = null;
+
+// ---- screenshot mode: hides the payout address, IP addresses and alert topic, so screenshots are safe to share
+let privacy = /[?&]screenshot/.test(location.search);
+try { privacy = privacy || localStorage.getItem("solo45-screenshot") === "1"; } catch (e) {}
+const IPV4 = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g;
+const BTC_ADDR = /\b(?:bc1|tb1|bcrt1)[02-9ac-hj-np-z]{8,87}\b|\b[13][1-9A-HJ-NP-Za-km-z]{25,34}\b/g;
+function hide(v) {  // applied to everything that arrives from the server while screenshot mode is on
+  if (!privacy) return v;
+  if (typeof v === "string") return v.replace(BTC_ADDR, "bc1q…hidden").replace(IPV4, "192.168.x.x");
+  if (Array.isArray(v)) return v.map(hide);
+  if (v && typeof v === "object") { const o = {}; for (const k in v) o[k] = hide(v[k]); return o; }
+  return v;
+}
+document.body.classList.toggle("privacy", privacy);
+$("shotBtn").textContent = privacy ? "Screenshot mode: on" : "Screenshot mode";
+$("shotBtn").onclick = () => {
+  try { localStorage.setItem("solo45-screenshot", privacy ? "0" : "1"); } catch (e) {}
+  location.href = location.pathname + (privacy ? "" : "?screenshot");  // reload so everything already shown is redone
+};
+
+// ---- the owner's time zone: "Best share today" and this month's totals follow their clock
+let tzChecked = false;
+function syncTimezone(s) {
+  if (tzChecked || !s.totals) return;
+  tzChecked = true;
+  let tz = "";
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+  if (tz && s.totals.timezone !== tz)
+    fetch("api/dash/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({timezone: tz})}).catch(() => {});
+}
 
 // ---- theme toggle (remembered per browser)
 (function () {
@@ -593,6 +636,7 @@ function poolColor(name) {
 function render(s) {
   if (!s.history && state && state.history) s.history = state.history;  // chart data arrives every 30 s
   state = s;
+  syncTimezone(s);
   const T = s.totals, tip = s.tip;
 
   $("tipH").textContent = tip ? tip.height.toLocaleString() : "—";
@@ -754,7 +798,7 @@ function renderBlock(s) {
   $("tlNote").textContent = tip.live
     ? "Bitaxe times include up to ~0.5 s of polling delay; Braiins OS miners up to ~0.2 s (taken from when their pool sends them a new job)."
       + (hasDatum ? " Datum Gateway = the first miner on Datum to get the new block's work." : "")
-      + " Times count from when the dashboard read the block in the node's log; a negative time means the pool was even quicker."
+      + " Times count from when your node announced the block; a negative time means the pool was even quicker."
     : "This block arrived before the dashboard started, so it wasn't timed. The next block will be timed live.";
   if (tip.hash !== lastTipHash) {
     if (lastTipHash) { const c = $("blockCard"); c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
@@ -1059,7 +1103,8 @@ async function ntLoad(refill) {
     document.querySelectorAll("#notifyCard [data-nt]").forEach(cb => { cb.checked = n.events[cb.dataset.nt] !== false; });
     ntFilled = true;
   }
-  $("ntSub").innerHTML = n.topic ? ` <b>${esc(n.topic)}</b>${n.server !== "https://ntfy.sh" ? ` on ${esc(n.server)}` : ""}` : "";
+  $("ntSub").innerHTML = !n.topic ? "" : privacy ? " (hidden in screenshot mode)"
+    : ` <b>${esc(n.topic)}</b>${n.server !== "https://ntfy.sh" ? ` on ${esc(n.server)}` : ""}`;
   $("ntLog").innerHTML = (n.log || []).length ? "<span>Last alerts:</span>" + n.log.slice(0, 5).map(e =>
     `<span>${new Date(e.t * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})} · ${esc(e.title)}</span>`).join("") : "";
 }
@@ -1469,17 +1514,57 @@ function setLive(on, text) {
 }
 function connect() {
   const es = new EventSource("events");
-  es.addEventListener("state", e => { setLive(true, "live"); render(JSON.parse(e.data)); });
+  es.addEventListener("state", e => { setLive(true, "live"); render(hide(JSON.parse(e.data))); });
   es.addEventListener("block", e => {
-    const b = JSON.parse(e.data);
+    const b = hide(JSON.parse(e.data));
     if (state) { state.tip = b; state.blocks = [b, ...state.blocks.filter(x => x.hash !== b.hash)]; render(state); }
   });
-  es.addEventListener("shares", e => addShares(JSON.parse(e.data), true));
+  es.addEventListener("shares", e => addShares(hide(JSON.parse(e.data)), true));
   es.onerror = () => setLive(false, "reconnecting…");
 }
-fetch("api/state").then(r => r.json()).then(render).catch(() => {});
-fetch("api/shares").then(r => r.json()).then(list => addShares(list, false)).catch(() => {});
+fetch("api/state").then(r => r.json()).then(s => render(hide(s))).catch(() => {});
+fetch("api/shares").then(r => r.json()).then(list => addShares(hide(list), false)).catch(() => {});
 connect();
+
+// ---- backup and restore
+$("bkSave").addEventListener("click", async () => {
+  $("bkNote").textContent = "";
+  try {
+    const r = await fetch("api/backup");
+    if (!r.ok) { $("bkNote").textContent = "Couldn't make the backup: " + ((await r.json()).error || r.status); return; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(await r.blob());
+    a.download = ((r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/) || [])[1] || "solo45-settings.json";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    $("bkNote").textContent = "Saved " + a.download + ". Keep it somewhere private.";
+  } catch (e) {
+    $("bkNote").textContent = "Couldn't make the backup: " + e.message;
+  }
+});
+$("bkLoad").addEventListener("click", () => $("bkFile").click());
+$("bkFile").addEventListener("change", async () => {
+  const f = $("bkFile").files[0];
+  $("bkFile").value = "";
+  if (!f) return;
+  let data = null;
+  try { data = JSON.parse(await f.text()); } catch (e) {}
+  if (!data || data.solo45_backup !== 1) { $("bkNote").textContent = "That file isn't a Solo45 settings backup."; return; }
+  const made = data.made ? " (saved " + String(data.made).replace("T", " ").slice(0, 16) + ")" : "";
+  if (!confirm(`Restore the settings from ${f.name}${made}? Your payout address, template policy and the other settings in the file replace the current ones.`)) return;
+  $("bkNote").textContent = "Restoring…";
+  try {
+    const r = await fetch("api/restore", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
+    const j = await r.json();
+    if (!r.ok) { $("bkNote").textContent = "Not restored: " + (j.error || r.status); return; }
+    $("bkNote").textContent = (j.restored.length ? "Restored: " + j.restored.join(", ") + "." : "Nothing to restore.")
+      + (j.errors.length ? " Problems: " + j.errors.join("; ") : "");
+    polFilled = false;
+    ntLoad(true);
+  } catch (e) {
+    $("bkNote").textContent = "Not restored: " + e.message;
+  }
+});
 </script>
 </body>
 </html>

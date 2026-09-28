@@ -959,6 +959,54 @@ class Pool:
         self.save_state()
         return 200, {"ok": True, "template_refresh_s": self.refresh_s(), "stall_guard_s": self.stall_guard_s()}
 
+    def export_settings(self):
+        """Everything set up on the dashboard, for its backup file: no statistics, logs or history."""
+        return {"settings": dict(self.state["settings"]), "overrides": dict(self.state["overrides"]),
+                "policy": self.policy_cfg, "last_diff": dict(self.state.get("last_diff", {}))}
+
+    async def restore_settings(self, data):
+        """Load a backup made by export_settings. Each part goes through the same checks as a change on the
+        dashboard; a part that fails is reported and skipped. Miners not in the backup keep their settings."""
+        done, errors = [], []
+
+        async def step(label, change):
+            try:
+                result = change()  # (status, reply), or a coroutine giving it
+                code, reply = (await result) if asyncio.iscoroutine(result) else result
+            except (ValueError, TypeError, AttributeError):
+                code, reply = 400, {"error": "bad value in the backup"}
+            (done.append(label) if code == 200 else errors.append("%s: %s" % (label, reply.get("error", code))))
+
+        s = data.get("settings") or {}
+        if s.get("default_address"):
+            await step("payout address", lambda: self.set_payout({"address": s["default_address"]}))
+        timing = {k: s[k] for k in ("template_refresh_s", "stall_guard_s") if k in s}
+        if timing:
+            await step("job and stall-guard timing", lambda: self.set_settings(timing))
+        for name, o in (data.get("overrides") or {}).items():
+            if isinstance(o, dict):
+                await step("difficulty for %s" % name, lambda o=o, name=name: self.set_override(dict(o, name=name)))
+        miners = [d for d in done if d.startswith("difficulty for ")]
+        if miners:
+            done = [d for d in done if d not in miners] + ["difficulty settings for %d miner%s" % (len(miners), "s"[len(miners) == 1:])]
+        if isinstance(data.get("policy"), dict):
+            await step("template policy", lambda: self.set_policy(data["policy"]))
+        kept = 0
+        for name, v in (data.get("last_diff") or {}).items():
+            try:
+                diff, at = float(v[0]), float(v[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if self.cfg["min_diff"] <= diff <= MAX_DIFF:
+                self.state.setdefault("last_diff", {})[str(name)[:64]] = [diff, at]
+                kept += 1
+        if kept:
+            done.append("remembered difficulty for %d miner%s" % (kept, "s"[kept == 1:]))
+        self.save_state()
+        log.info("settings restored from a backup: %s%s", ", ".join(done) or "nothing",
+                 "; problems: " + "; ".join(errors) if errors else "")
+        return 200, {"ok": not errors, "restored": done, "errors": errors}
+
     async def serve_api(self, reader, writer):
         try:
             method, path = (await asyncio.wait_for(reader.readline(), 5)).decode().split()[:2]
@@ -972,26 +1020,32 @@ class Pool:
                 elif line.lower().startswith(b"x-solo45-token:"):
                     token = line.split(b":", 1)[1].strip().decode(errors="replace")
             status, reply = 200, None
-            if method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy", "/api/payout"):
-                # settings changes are only accepted from the Umbrel itself, or from the dashboard with
-                # the app's shared secret (the Umbrel app runs the dashboard in its own container)
-                secret = os.environ.get("SOLO45_API_TOKEN", "")
-                local = (writer.get_extra_info("peername") or ("",))[0] == "127.0.0.1"
-                if not (local or (secret and hmac.compare_digest(token, secret))):
+            # settings changes (and the settings backup) are only for the Umbrel itself, or the dashboard with
+            # the app's shared secret (the Umbrel app runs the dashboard in its own container)
+            secret = os.environ.get("SOLO45_API_TOKEN", "")
+            local = (writer.get_extra_info("peername") or ("",))[0] == "127.0.0.1"
+            trusted = local or (secret and hmac.compare_digest(token, secret))
+            if method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy", "/api/payout", "/api/restore"):
+                if not trusted:
                     status, reply = 403, {"error": "settings can only be changed from the Umbrel"}
                 else:
                     try:
-                        data = json.loads(await asyncio.wait_for(reader.readexactly(min(length, 4096)), 5))
+                        size = min(length, 200000 if path == "/api/restore" else 4096)
+                        data = json.loads(await asyncio.wait_for(reader.readexactly(size), 5))
                         if path == "/api/worker":
                             status, reply = await self.set_override(data)
                         elif path == "/api/policy":
                             status, reply = await self.set_policy(data)
                         elif path == "/api/payout":
                             status, reply = await self.set_payout(data)
+                        elif path == "/api/restore":
+                            status, reply = await self.restore_settings(data)
                         else:
                             status, reply = self.set_settings(data)
                     except (ValueError, TypeError, AttributeError):
                         status, reply = 400, {"error": "bad request"}
+            elif method == "GET" and path == "/api/export":
+                status, reply = (200, self.export_settings()) if trusted else (403, {"error": "only for the dashboard"})
             elif method == "GET" and path.startswith("/api/shares"):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
                 since = int((query.get("since") or ["0"])[0])

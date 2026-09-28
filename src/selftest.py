@@ -241,6 +241,32 @@ check("vardiff windows and band", vd(10, 150) is None and vd(40, 450) is None an
       and vd(0, 130) == 250 and vd(1, 90) is None and vd(40, 200, o={"diff": 500}) is None and vd(20, 600) == 500)
 
 
+# 4g. settings backup: export from one pool, restore into a fresh one
+_a = P.Pool(cfg, data_dir=tempfile.mkdtemp(prefix="solo45-backup-"))
+_a.state["overrides"] = {"BitaxeX": {"share_seconds": 12.0}, "S21X": {"diff": 250000.0}}
+_a.state["settings"]["template_refresh_s"] = 40.0
+_a.policy_cfg = policy.load_config({"mode": "filter", "rules": {"minfee": {"on": True, "sat_vb": 7}}})
+_a.state["last_diff"] = {"BitaxeX": [4500.0, time.time()]}
+_b = P.Pool(cfg, data_dir=tempfile.mkdtemp(prefix="solo45-restore-"))
+_code, _rep = asyncio.run(_b.restore_settings(json.loads(json.dumps(_a.export_settings()))))
+check("settings backup restores into a fresh pool", _code == 200 and _rep["ok"] and _b.state["overrides"] == _a.state["overrides"]
+      and _b.refresh_s() == 40.0 and _b.policy_cfg["mode"] == "filter" and _b.policy_cfg["rules"]["minfee"]["sat_vb"] == 7
+      and _b.remembered_diff("BitaxeX") == 4500.0, "(%s)" % "; ".join(_rep["restored"] + _rep["errors"]))
+
+
+# 4h. the node's ZMQ block feed, through the built-in ZMTP client (the dashboard's source of new blocks)
+import urllib.parse
+import zmqsub
+_zurl = os.environ.get("BITCOIN_ZMQ_HASHBLOCK") or "tcp://%s:28334" % urllib.parse.urlparse(cfg["rpc_url"]).hostname
+try:
+    _zh, _zp = _zurl.replace("tcp://", "").rsplit(":", 1)
+    zmqsub.ZmqSub(_zh, int(_zp)).close()
+    _zok = "ok"
+except (OSError, ValueError) as e:
+    _zok = str(e)
+check("ZMQ block feed handshake with the node", _zok == "ok", "(%s: %s)" % (_zurl, _zok))
+
+
 # 5. stratum round trip with an independently written miner
 def miner_header(notify, en1, en2, ntime, nonce, version):
     jid, prevh, c1, c2, branch, ver, nbits, _, _ = notify

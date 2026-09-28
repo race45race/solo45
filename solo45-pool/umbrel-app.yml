@@ -36,5 +36,32 @@ path: ""
 defaultUsername: ""
 defaultPassword: ""
 
+widgets:
+  - id: "stats"
+    type: "four-stats"
+    refresh: "30s"
+    endpoint: "dashboard:8099/api/widget"
+    link: ""
+    example:
+      type: "four-stats"
+      link: ""
+      items:
+        - title: "Hashrate"
+          text: "230"
+          subtext: "TH/s"
+        - title: "Miners"
+          text: "12/12"
+          subtext: "online"
+        - title: "Best today"
+          text: "1.28"
+          subtext: "G"
+        - title: "Block odds"
+          text: "1/29K"
+          subtext: "per day"
+
+backupIgnore:
+  - data/pool/pool.log*
+  - data/dash/dashboard.log*
+
 submitter: race45race
 submission: https://github.com/race45race/solo45

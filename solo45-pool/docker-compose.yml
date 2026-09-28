@@ -7,7 +7,7 @@ services:
       APP_PORT: 8099
 
   pool:
-    image: ghcr.io/race45race/solo45:v0.1.14@sha256:e46f76ecca942ae91a037f674f9b75db9026d50e34b68831c7c9207684448db1
+    image: ghcr.io/race45race/solo45:v0.1.12@sha256:de18cc8e051f927b80f6f164ea2815a3ee64d607b7cc90da704250c96ed233d2
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 10s
@@ -27,7 +27,7 @@ services:
         ipv4_address: ${APP_SOLO45_POOL_IP}  # fixed, so health checks on the Umbrel can read the pool's API
 
   dashboard:
-    image: ghcr.io/race45race/solo45:v0.1.14@sha256:e46f76ecca942ae91a037f674f9b75db9026d50e34b68831c7c9207684448db1
+    image: ghcr.io/race45race/solo45:v0.1.12@sha256:de18cc8e051f927b80f6f164ea2815a3ee64d607b7cc90da704250c96ed233d2
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 10s
@@ -37,14 +37,13 @@ services:
     volumes:
       - ${APP_DATA_DIR}/data/dash:/data/dash
       - ${APP_DATA_DIR}/data/pool:/data/pool:ro
-      - ${APP_BITCOIN_DATA_DIR}:/bitcoin:ro
     environment:
       SOLO45_DASH_DATA: /data/dash
       SOLO45_POOL_LOG: /data/pool/pool.log
       SOLO45_API_BASE: http://solo45-pool_pool_1:3380
       SOLO45_API_TOKEN: ${APP_SOLO45_POOL_API_TOKEN}
       SOLO45_PROXY_HOST: solo45-pool_app_proxy_1  # changes are only accepted through the Umbrel login
-      BITCOIN_DATA_DIR: /bitcoin
+      BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}  # new blocks, no log reading
       BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
       BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
       BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}

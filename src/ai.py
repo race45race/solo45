@@ -44,6 +44,8 @@ LOGS = {
     "dashboard": DATA + "/dashboard.log",
     "gobrrr": os.environ.get("GOBRRR_LOG") or HOME + "/umbrel/app-data/gobrrr-pool/data/ckpool-logs/ckpool.log",
 }
+# only offer the logs this install can actually read (the Umbrel app doesn't mount the node's folder)
+LOGS = {k: v for k, v in LOGS.items() if k in ("solo45", "dashboard") or os.path.exists(v)}
 
 SYSTEM = """You are the assistant built into a home Bitcoin solo-mining dashboard running on an Umbrel server. You help the owner understand how their miners, pools and node are doing.
 
@@ -60,7 +62,7 @@ How to answer:
 TOOLS = [
     {
         "name": "read_log",
-        "description": "Read the most recent lines of a log on the Umbrel. 'solo45' is the Solo45 pool log, 'node' is Bitcoin Core's debug.log, 'dashboard' is this dashboard's log, 'gobrrr' is the Go Brrr (ckpool) log. Optionally keep only lines containing some text.",
+        "description": "Read the most recent lines of a log on the Umbrel. 'solo45' is the Solo45 pool log, 'dashboard' is this dashboard's log; 'node' (Bitcoin Core's debug.log) and 'gobrrr' (the Go Brrr ckpool log) are only there when this install can read them. Optionally keep only lines containing some text.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -71,6 +73,11 @@ TOOLS = [
             "required": ["log"],
             "additionalProperties": False,
         },
+    },
+    {
+        "name": "get_node_status",
+        "description": "Bitcoin Core's current state straight from its RPC: blocks vs headers, sync progress, peers (version, sync height, ping, blocks in flight), mempool size and minimum fee, relay fee and any competing chain tips. Use it for questions about the node.",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
         "name": "get_miner_details",
@@ -141,8 +148,10 @@ def tail_lines(path, n, contains=None):
 
 
 class Assistant:
-    def __init__(self, cfg, snapshot_fn, miner_fn, history_fn):
+    def __init__(self, cfg, snapshot_fn, miner_fn, history_fn, node_fn=None, now_fn=None):
         self.cfg = cfg
+        self.node_fn = node_fn
+        self.now = now_fn or (lambda: datetime.now().astimezone())  # the owner's local time
         notes = (cfg.get("notes") or "").strip()  # the owner's own facts about their fleet, from config.json
         self.system = SYSTEM.replace("{NOTES}", "\nThe owner's notes about their setup:\n" + notes + "\n" if notes else "")
         self.snapshot_fn = snapshot_fn
@@ -226,6 +235,13 @@ class Assistant:
             if args.get("log") not in LOGS:
                 return "Unknown log. Choose one of: " + ", ".join(sorted(LOGS)), True
             return tail_lines(LOGS[args["log"]], args.get("lines", 50), args.get("contains")), False
+        if name == "get_node_status":
+            if not self.node_fn:
+                return "Not available here.", True
+            try:
+                return json.dumps(self.node_fn(), default=str)[:20000], False
+            except Exception as e:
+                return "The node didn't answer: %s" % e, True
         if name == "get_miner_details":
             try:
                 return json.dumps(self.miner_fn(args["ip"]), default=str)[:20000], False
@@ -252,8 +268,8 @@ class Assistant:
         snap["best_history"] = snap.get("best_history", [])[-7:]
         for m in snap.get("miners", []):
             m.pop("temp_trend", None)  # long lists; the read-only tools can fetch details if needed
-        now = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z")
-        return "Current time on the Umbrel: %s\nLive dashboard state (JSON):\n%s" % (
+        now = self.now().strftime("%Y-%m-%d %H:%M %Z")
+        return "Current time (the owner's time zone): %s\nLive dashboard state (JSON):\n%s" % (
             now, json.dumps(snap, default=str, separators=(",", ":")))
 
     def ask(self, question, history=(), kind="question"):
@@ -346,15 +362,15 @@ class Assistant:
         return res
 
     def report_loop(self):
-        """Write a report every report_every_days days, after report_hour (Umbrel local time)."""
+        """Write a report every report_every_days days, after report_hour (the owner's local time)."""
         last_try = 0.0
         while True:
             time.sleep(300)
             if not self.api_key() or time.time() - last_try < 3600:  # at most one attempt an hour
                 continue
-            now = datetime.now()
+            now = self.now()
             reports = _load(REPORTS_PATH, [])
-            last = datetime.fromtimestamp(reports[-1]["at"]) if reports else None
+            last = datetime.fromtimestamp(reports[-1]["at"], now.tzinfo) if reports else None
             every = self.cfg.get("report_every_days", 1)
             if every <= 0:  # automatic reports are off
                 continue

@@ -20,3 +20,7 @@ Everything normal is set on the dashboard: payout address, share difficulty per 
 ## Run without Docker
 
 Both programs also run directly with Python 3 on the machine that runs the node: `python3 src/pool.py` and `python3 src/server.py`. `python3 src/selftest.py` runs the pool's checks against the live node.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
