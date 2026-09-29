@@ -155,7 +155,7 @@ class RPC:
 # ------------------------------------------------------------------------- job
 
 class Job:
-    def __init__(self, job_id, tpl, tag):
+    def __init__(self, job_id, tpl, tag, tx_cache=None):
         self.id = job_id
         self.height = tpl["height"]
         self.prev_hex = tpl["previousblockhash"]
@@ -168,7 +168,16 @@ class Job:
         self.value = tpl["coinbasevalue"]
         wc = tpl.get("default_witness_commitment")
         self.witness_commitment = bytes.fromhex(wc) if wc else None
-        self.tx_data = [bytes.fromhex(t["data"]) for t in tpl["transactions"]]
+        # Consecutive jobs carry mostly the same transactions: share one copy of each (keyed by wtxid) instead
+        # of every job holding its own. With full blocks that was ~1 MB per job, ~44-70 MB for the jobs kept.
+        cache = {} if tx_cache is None else tx_cache
+        self.tx_data = []
+        for t in tpl["transactions"]:
+            key = t.get("hash") or t["txid"]
+            data = cache.get(key)
+            if data is None:
+                data = cache[key] = bytes.fromhex(t["data"])
+            self.tx_data.append(data)
         self.fees = sum(t.get("fee", 0) for t in tpl["transactions"])
         self.branch = merkle_branch([bytes.fromhex(t["txid"])[::-1] for t in tpl["transactions"]])
         script = push(script_num(self.height)) + push(tag)
@@ -241,6 +250,7 @@ class Worker:
         self.diff = pool.cfg["start_diff"]
         self.remembered = False  # started at the difficulty remembered from its last connection
         self.switches_at_once = False  # uses a new difficulty straight away, not only from its next job
+        self.vd_pending = None  # (direction, estimate) from a window that wanted a change, awaiting a second
         self.job_diff = {}
         self.subscribed = self.authorized = False
         self.user = self.name = self.address = self.agent = ""
@@ -363,6 +373,7 @@ class Worker:
     def set_diff(self, diff):
         self.diff = min(MAX_DIFF, max(self.pool.cfg["min_diff"], diff))
         self.vd_start, self.vd_count, self.vd_work = time.time(), 0, 0.0
+        self.vd_pending = None
 
     def override(self):
         """User settings for this miner name: {"diff": fixed} or {"share_seconds": target}."""
@@ -450,9 +461,9 @@ class Worker:
         return self.diff if self.switches_at_once else job_diff
 
     def vardiff(self, now):
-        """Retarget after 40 shares or 10 minutes, or sooner when no share at all came in the time 12 should
-        have (the difficulty is far too high, e.g. a new miner). Changes under x1.5 either way are left alone:
-        even 40 shares wobble ~15% from luck, and shorter windows had the difficulty jumping every few minutes."""
+        """Measure over 40 shares or 10 minutes, or less when no share at all came in the time 12 should have
+        (the difficulty is far too high, e.g. a new miner). Differences under x1.5 either way are left alone, and
+        a change needs two windows in a row to agree (unless it's x4 or more): even 40 shares wobble ~15% from luck."""
         o = self.override()
         if o.get("diff"):
             return None
@@ -470,7 +481,17 @@ class Worker:
         ideal = min(MAX_DIFF, max(self.pool.cfg["min_diff"], float("%.3g" % ideal)))
         self.vd_start, self.vd_count, self.vd_work = now, 0, 0.0
         if 1 / 1.5 < ideal / self.diff < 1.5:
+            self.vd_pending = None
             return None
+        # A change needs two windows in a row pointing the same way: one window alone was too often just luck
+        # (a miner swinging between 3.8K and 6.5K around its 5.2K). Big jumps (x4, or no shares at all) go at once.
+        direction = 1 if ideal > self.diff else -1
+        if not (far_too_high or ideal >= self.diff * 4 or ideal <= self.diff / 4):
+            if not (self.vd_pending and self.vd_pending[0] == direction):
+                self.vd_pending = (direction, ideal)
+                return None
+            ideal = float("%.3g" % (ideal * self.vd_pending[1]) ** 0.5)  # the two windows' average
+        self.vd_pending = None
         self.diff = ideal
         return ideal
 
@@ -497,6 +518,7 @@ class Pool:
         self.submit_executor = ThreadPoolExecutor(1)  # found blocks never queue behind other RPCs
         self.tag = cfg["coinbase_tag"].encode()[:40]
         self.jobs = collections.OrderedDict()
+        self.tx_cache = {}  # wtxid -> raw transaction, shared by the jobs (only the latest template's are kept here)
         self.job = None
         self.job_ids = itertools.count(random.randrange(1 << 16))
         self.en1_ids = itertools.count(random.randrange(1 << 30))
@@ -570,9 +592,14 @@ class Pool:
                 report = policy.evaluate(tpl, self.policy_cfg)
                 if report["skipped"] and self.policy_fallback_height != tpl["height"]:
                     tpl, filtered = policy.apply(tpl, report), True
-            job = Job("%x" % next(self.job_ids), tpl, self.tag)
+            job = Job("%x" % next(self.job_ids), tpl, self.tag, self.tx_cache)
+            keep = {t.get("hash") or t["txid"] for t in tpl["transactions"]}
+            self.tx_cache = {k: v for k, v in self.tx_cache.items() if k in keep}
             job.filtered = filtered
             self.jobs[job.id] = job
+            # a job two or more blocks back can never make a valid block or share, so let its memory go
+            for jid in [j for j, old in self.jobs.items() if old.height < job.height - 1]:
+                del self.jobs[jid]
             while len(self.jobs) > 40:
                 self.jobs.popitem(last=False)
             self.job, self.tip = job, job.prev_hex

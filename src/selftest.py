@@ -178,6 +178,16 @@ fcb = fjob.coinb1 + bytes(12) + fjob.coinb2(spk)
 fres = rpc.call("getblocktemplate", {"mode": "proposal", "data": fjob.block(fjob.header(fcb, fjob.version, fjob.curtime, 0), fcb).hex()})
 check("node accepts a block with the fee rule applied", fres is None,
       "(%d of %d txs below 3 sat/vB left out, result %r)" % (frep["skipped"], len(tpl["transactions"]), fres))
+# jobs share one copy of each transaction, and a block built from shared data is still valid
+_cache = {}
+_ja = P.Job("sa", tpl, cfg["coinbase_tag"].encode(), _cache)
+_jb = P.Job("sb", policy.apply(tpl, frep), cfg["coinbase_tag"].encode(), _cache)
+_ids = {id(y) for y in _ja.tx_data}
+_shared = all(id(x) in _ids for x in _jb.tx_data)
+_scb = _jb.coinb1 + bytes(12) + _jb.coinb2(spk)
+_sres = rpc.call("getblocktemplate", {"mode": "proposal", "data": _jb.block(_jb.header(_scb, _jb.version, _jb.curtime, 0), _scb).hex()})
+check("jobs share transaction memory, blocks still valid", _shared and _sres is None and len(_cache) == len(tpl["transactions"]),
+      "(%d txs shared, result %r)" % (len(_jb.tx_data), _sres))
 
 
 # 4c. stall guard decisions, on made-up node states
@@ -229,17 +239,29 @@ check("policy totals survive a restart", _v1["periods"][0]["blocks"] == 2 and _v
       and [e["height"] for e in _v2["recent"]] == [11, 10])
 
 
-# 4f. vardiff windows: 40 shares or 10 minutes, x1.5 band, a quick drop when shares stop coming
-def vd(count, elapsed, diff=1000.0, o=None):
+# 4f. vardiff: windows of 40 shares or 10 minutes, a x1.5 band, two windows must agree unless the jump is x4 or more
+def vd_worker(diff=1000.0, o=None):
     o = {"share_seconds": 15} if o is None else o
-    w = types.SimpleNamespace(diff=diff, vd_start=100.0, vd_count=count, vd_work=count * diff, override=lambda: o,
-                              pool=types.SimpleNamespace(cfg={"share_seconds": 5, "min_diff": 1}))
+    return types.SimpleNamespace(diff=diff, vd_pending=None, override=lambda: o,
+                                 pool=types.SimpleNamespace(cfg={"share_seconds": 5, "min_diff": 1}))
+
+
+def vd(count, elapsed, w=None):
+    """One window on worker w (a fresh one by default): count shares at its difficulty in elapsed seconds."""
+    w = w or vd_worker()
+    w.vd_start, w.vd_count, w.vd_work = 100.0, count, count * w.diff
     return P.Worker.vardiff(w, 100.0 + elapsed)
 
 
-check("vardiff windows and band", vd(10, 150) is None and vd(40, 450) is None and vd(40, 200) == 3000
-      and vd(0, 130) is None and vd(0, 185) == 250 and vd(1, 300) is None and vd(40, 200, o={"diff": 500}) is None
-      and vd(20, 600) == 500)
+_up, _down, _flip = vd_worker(), vd_worker(), vd_worker()
+_two_up = [vd(40, 200, _up), vd(40, 200, _up)]          # 3x twice in a row: changes on the second window
+_two_down = [vd(20, 600, _down), vd(20, 600, _down)]    # /2 twice: the same
+_flipping = [vd(40, 200, _flip), vd(20, 600, _flip)]    # up, then down: luck, no change
+check("vardiff windows, band and two-window rule",
+      vd(10, 150) is None and vd(40, 450) is None and _two_up == [None, 3000] and _two_down == [None, 500]
+      and _flipping == [None, None] and vd(40, 100) == 6000 and vd(0, 130) is None and vd(0, 185) == 250
+      and vd(1, 300) is None and vd(40, 200, vd_worker(o={"diff": 500})) is None,
+      "(%s %s %s)" % (_two_up, _two_down, _flipping))
 
 # a share counts at the difficulty the miner really used: the job's, until the miner shows it switches at once
 _sw = types.SimpleNamespace(diff=1000.0, job_diff={"old": 8000.0, "new": 1000.0}, switches_at_once=False)

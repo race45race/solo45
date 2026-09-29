@@ -11,7 +11,19 @@ import threading
 import time
 from datetime import datetime
 
-import anthropic
+import importlib.util
+
+if importlib.util.find_spec("anthropic") is None:  # the dashboard then runs without the assistant
+    raise ImportError("the anthropic library isn't installed")
+anthropic = None  # imported on first use: it takes ~50 MB, which nobody who leaves the AI off should pay
+
+
+def load_anthropic():
+    global anthropic
+    if anthropic is None:
+        import anthropic as lib
+        anthropic = lib
+    return anthropic
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 HOME = os.path.expanduser("~")
@@ -288,7 +300,7 @@ class Assistant:
 
         # keys that aren't scoped to a workspace must name one on every request
         headers = {"anthropic-workspace-id": self.cfg["workspace_id"]} if self.cfg.get("workspace_id") else None
-        client = anthropic.Anthropic(api_key=key, timeout=180.0, max_retries=2, default_headers=headers)
+        client = load_anthropic().Anthropic(api_key=key, timeout=180.0, max_retries=2, default_headers=headers)
         messages = []
         for turn in list(history)[-6:]:
             if turn.get("q") and turn.get("a"):
@@ -328,7 +340,7 @@ class Assistant:
             else:
                 return {"error": "The question needed too many steps; try asking something narrower.", "cost": cost}
         except anthropic.AuthenticationError:
-            return {"error": "Anthropic rejected the API key in ~/solo-dash/anthropic_key.", "cost": cost}
+            return {"error": "Anthropic rejected the API key. Check it under AI settings on the dashboard.", "cost": cost}
         except anthropic.PermissionDeniedError:
             return {"error": "This API key isn't allowed to use %s." % model, "cost": cost}
         except anthropic.RateLimitError:
@@ -336,7 +348,7 @@ class Assistant:
         except anthropic.BadRequestError as e:
             if "workspace" in str(e.message):
                 return {"error": "This API key isn't tied to a workspace. Either create a key inside a workspace, or add "
-                                 "\"workspace_id\": \"wrkspc_...\" to the \"ai\" section of ~/solo-dash/config.json.", "cost": cost}
+                                 "\"workspace_id\": \"wrkspc_...\" to the \"ai\" section of the dashboard's config.json.", "cost": cost}
             return {"error": "Anthropic API error 400: %s" % e.message, "cost": cost}
         except anthropic.APIStatusError as e:
             return {"error": "Anthropic API error %s: %s" % (e.status_code, e.message), "cost": cost}

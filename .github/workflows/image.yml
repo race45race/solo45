@@ -1,6 +1,7 @@
 name: Build image
 
-# Builds ghcr.io/<owner>/solo45 for x86 and ARM whenever a version tag (v0.1.0, ...) is pushed.
+# Builds ghcr.io/<owner>/solo45 for x86 and ARM whenever a version tag (v0.1.0, ...) is pushed,
+# then runs the node-free checks (src/offline_test.py) inside the new image on real x86 and ARM machines.
 on:
   push:
     tags: ["v*"]
@@ -34,3 +35,14 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+  test:
+    needs: build
+    if: github.ref_type == 'tag'
+    strategy:
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]  # x86 and a real ARM (arm64) machine, like a Raspberry Pi
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Node-free checks inside the published image
+        run: docker run --rm ghcr.io/${{ github.repository_owner }}/solo45:${{ github.ref_name }} python /app/offline_test.py
