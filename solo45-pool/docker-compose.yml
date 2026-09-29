@@ -7,7 +7,7 @@ services:
       APP_PORT: 8099
 
   pool:
-    image: ghcr.io/race45race/solo45:v0.1.18@sha256:5a2e84bc710e59ba5c4a224000432e73c698c0d03048e9bffbdb2719cc4ecf4b
+    image: ghcr.io/race45race/solo45:v0.1.19@sha256:bf184c4d2c7e1265bff2acced013eeb01e75fc7e46730d5ad715a699e7d2ca43
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 10s
@@ -27,7 +27,7 @@ services:
         ipv4_address: ${APP_SOLO45_POOL_IP}  # fixed, so health checks on the Umbrel can read the pool's API
 
   dashboard:
-    image: ghcr.io/race45race/solo45:v0.1.18@sha256:5a2e84bc710e59ba5c4a224000432e73c698c0d03048e9bffbdb2719cc4ecf4b
+    image: ghcr.io/race45race/solo45:v0.1.19@sha256:bf184c4d2c7e1265bff2acced013eeb01e75fc7e46730d5ad715a699e7d2ca43
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 10s
