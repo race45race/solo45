@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.19"
+version: "0.1.20"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Uses much less memory, for smaller machines like a Raspberry Pi: jobs now share one copy of each transaction (the pool's jobs went from about 50 MB to under 3 MB with full blocks), and the AI library only loads when you use the assistant (about 50 MB less when it's off). Share difficulty is steadier: a miner's difficulty only changes when two measurements in a row agree. Every release is now also tested on a real ARM machine.
+  The dashboard's memory no longer creeps up (it reached about 190 MB; in testing the new version stayed under 40 MB). The template policy check is about 3 times faster, so new work reaches your miners sooner when blocks are full. New "Always pay my address" switch under the payout address: every miner pays your address, whatever its username says (on for new installs; existing installs keep their current behavior until you turn it on). Security: the pool's API now only answers the dashboard, the dashboard's live data only comes through your Umbrel login, and the pool limits connections per address. Updates are quicker and cleaner: the pool and dashboard now stop properly, and a block being submitted finishes first. Bitaxe switch times are measured more precisely.
 
 developer: race45race
 website: https://github.com/race45race/solo45
