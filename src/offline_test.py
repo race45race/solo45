@@ -212,6 +212,21 @@ async def pool_tests():
           no_token.startswith(b"HTTP/1.1 403") and with_token.startswith(b"HTTP/1.1 200")
           and b"Access-Control" not in with_token and garbage.startswith(b"HTTP/1.1 400"),
           "(%s / %s / %s)" % (no_token[:12], with_token[:12], garbage[:12]))
+    # without a token set, only the machine itself may use it
+    lan, v4, v6 = [await api(b"GET /api HTTP/1.1\r\n\r\n", ip=ip) for ip in ("10.0.0.5", "127.0.0.1", "::1")]
+    check("pool API without a token: this machine only", lan.startswith(b"HTTP/1.1 403")
+          and v4.startswith(b"HTTP/1.1 200") and v6.startswith(b"HTTP/1.1 200"), "(%s / %s / %s)" % (lan[:12], v4[:12], v6[:12]))
+
+    # the node's check of refresh jobs spaces out when it's slow (a Raspberry Pi); the dashboard gets the numbers
+    every = [pool.check_every_s()]
+    pool.check_times.extend([27] * 5)
+    every.append(pool.check_every_s())
+    pool.check_times.extend([1000] * 20)
+    every.append(pool.check_every_s())
+    pool.build_times.extend([150, 140, 160])
+    timing = pool.snapshot()["pool"]["timing"]
+    check("block checks space out on a slow machine, timings reported", every == [10.0, 10.0, 60.0]
+          and timing["check_ms"] == 1000 and timing["build_ms"] == 150, "(%s, %s)" % (every, timing))
 
     # "Always pay my address": on for a new install, off stays off, and an address must be set for it to apply
     old_dir = tempfile.mkdtemp(prefix="solo45-old-")

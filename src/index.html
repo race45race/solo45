@@ -810,11 +810,14 @@ function renderBlock(s) {
     rows.push(`<div class="tl-row"><span class="name">${esc(m.name)}</span>${bar(ms, poolColor(m.pool))}<span class="t num ${ms == null ? "faint" : ""}">${ms != null ? fmtMs(ms) : waiting ? "…" : "—"}</span></div>`);
   }
   $("timeline").innerHTML = rows.join("");
-  $("tlNote").textContent = tip.live
-    ? "Bitaxe times include up to ~0.5 s of polling delay; Braiins OS miners up to ~0.2 s (taken from when their pool sends them a new job)."
+  const tm = (s.solo45 || {}).timing || {};
+  $("tlNote").textContent = (tip.live
+    ? "Bitaxe times include up to ~0.2 s of polling delay; Braiins OS miners up to ~0.2 s (taken from when their pool sends them a new job)."
       + (hasDatum ? " Datum Gateway = the first miner on Datum to get the new block's work." : "")
       + " Times count from when your node announced the block; a negative time means the pool was even quicker."
-    : "This block arrived before the dashboard started, so it wasn't timed. The next block will be timed live.";
+    : "This block arrived before the dashboard started, so it wasn't timed. The next block will be timed live.")
+    + (tm.build_ms != null ? ` Typically Solo45 builds and sends new work ${tm.build_ms} ms after it spots a block (last ${tm.blocks} blocks)` : "")
+    + (tm.check_ms != null ? `${tm.build_ms != null ? ", and" : " Typically"} your node checks a job in ${tm.check_ms} ms.` : tm.build_ms != null ? "." : "");
   if (tip.hash !== lastTipHash) {
     if (lastTipHash) { const c = $("blockCard"); c.classList.remove("flash"); void c.offsetWidth; c.classList.add("flash"); }
     lastTipHash = tip.hash;

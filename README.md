@@ -118,7 +118,7 @@ services:
       BITCOIN_RPC_PASS: your-rpc-password
 ```
 
-> **Important:** outside Umbrel there is no login in front of the dashboard. Anyone who can open port 8099 can see your miners and change settings, including the payout address. Only run it on a network you trust, or put it behind a reverse proxy with a password. The pool's own API (port 3380) answers only requests carrying `SOLO45_API_TOKEN`, so set a long random one and leave that port unpublished.
+> **Important:** outside Umbrel there is no login in front of the dashboard. Anyone who can open port 8099 can see your miners and change settings, including the payout address. Only run it on a network you trust, or put it behind a reverse proxy with a password. The pool's own API (port 3380) only answers the machine it runs on, or requests carrying `SOLO45_API_TOKEN`: set the same long random one on both containers (the dashboard needs it) and leave that port unpublished.
 
 Both programs also run straight from the source with Python 3 (tested with 3.13): `python3 src/pool.py` and `python3 src/server.py`. `python3 src/selftest.py` checks the pool against your live node (block hashing, merkle roots, templates the node accepts, the template policy and more).
 

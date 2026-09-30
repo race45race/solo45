@@ -388,8 +388,11 @@ def solo45_loop():
                             blk["height"], blk["worker"], blk["result"] or "accepted")
                         S["found"].append({"t": int(blk["at"] * 1000), "msg": msg})
         except (OSError, ValueError) as e:  # Solo45 really didn't answer (or sent something unreadable)
+            err = str(e)[:120]
+            if isinstance(e, urllib.error.HTTPError) and e.code == 403:
+                err = "the pool turned the dashboard away: give both the same SOLO45_API_TOKEN"
             with lock:
-                S["solo45"] = dict(S["solo45"], up=False, error=str(e)[:120])
+                S["solo45"] = dict(S["solo45"], up=False, error=err)
         except Exception as e:  # a bug in this loop is not a pool outage: log it, don't raise the alarm
             print("solo45_loop error: %r" % e, flush=True)
         time.sleep(1)

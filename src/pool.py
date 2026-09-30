@@ -250,6 +250,11 @@ def hashrate(shares, window, now):
     return total * 2 ** 32 / window
 
 
+def median(values):
+    s = sorted(values)
+    return s[len(s) // 2] if s else None
+
+
 class Worker:
     """One stratum connection."""
 
@@ -558,6 +563,8 @@ class Pool:
         self.share_seq = itertools.count(1)
         self.last_switch = None
         self.proposal = {"ok": None}
+        self.build_times = collections.deque(maxlen=50)  # ms from spotting a new block to the miners having work
+        self.check_times = collections.deque(maxlen=50)  # ms the node takes to check a job (proposal mode)
         self.conns = collections.Counter()  # ip -> open stratum connections
         self.conn_warned = {}  # ip -> when we last logged refusing it
         self.submitting = 0  # found blocks on their way to the node
@@ -654,6 +661,8 @@ class Pool:
             ms = round((time.time() - t0) * 1000)
             if new_block:
                 self.last_switch = {"height": job.height, "ms": ms, "at": time.time(), "workers": len(workers)}
+                if workers:  # not the first job after a start
+                    self.build_times.append(ms)
                 log.info("new network block %d (%s), now mining %d", job.height - 1, job.prev_hex, job.height)
             log.info("%s job %s for block %d: %.8f BTC, %d txs, %s bytes, fees %.4f BTC (sent to %d workers in %d ms)",
                      "new-block" if new_block else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
@@ -665,11 +674,17 @@ class Pool:
                 policy.add_watch(report, node_tpl, self.policy_cfg)
             if report is not None:
                 self.record_policy(report, mode, filtered)
-        # the node fully checks every new block's work; routine refreshes at most every 10 s,
-        # so a short refresh interval doesn't keep the node busy validating
-        if new_block or time.time() - self.last_proposal >= 10:
+        # the node fully checks every new block's work; routine refreshes less often (see check_every_s),
+        # so a short refresh interval or a slow machine doesn't keep the node busy validating
+        if new_block or time.time() - self.last_proposal >= self.check_every_s():
             self.last_proposal = time.time()
             asyncio.get_running_loop().create_task(self.check_proposal(job))
+
+    def check_every_s(self):
+        """How often a job refresh (same block) gets the node's check: every 10 s at most, and never more than
+        1/60 of the time. While the node checks a block it holds its main lock, so a new block arriving then
+        waits; on a slow machine (a Raspberry Pi) the checks space out. New-block jobs are always checked."""
+        return max(10.0, 60 * (median(self.check_times) or 0) / 1000)
 
     async def check_proposal(self, job):
         """Have bitcoind validate a complete block built from this job (everything except proof of work)."""
@@ -678,10 +693,13 @@ class Pool:
         for spk in spks:
             coinbase = job.coinb1 + bytes(EN1_SIZE + EN2_SIZE) + job.coinb2(spk)
             header = job.header(coinbase, job.version, job.curtime, 0)
+            t_call = time.time()
             try:
                 res = await self.call("getblocktemplate", {"mode": "proposal", "data": job.block(header, coinbase).hex()}, timeout=60)
             except Exception as e:
                 res = "rpc error: %s" % e
+            if res != "inconclusive-not-best-prevblk":
+                self.check_times.append(round((time.time() - t_call) * 1000))
             if res == "inconclusive-not-best-prevblk":
                 return  # a newer block arrived meanwhile; the next job gets checked
             ok = res is None
@@ -878,6 +896,9 @@ class Pool:
                 "blocks": self.state["blocks"],
                 "last_switch": self.last_switch,
                 "proposal": self.proposal,
+                "timing": {"build_ms": median(self.build_times), "blocks": len(self.build_times),
+                           "check_ms": median(self.check_times), "checks": len(self.check_times),
+                           "check_every_s": round(self.check_every_s(), 1)},
                 "default_address": self.cfg["default_address"],
                 "force_default_address": self.force_default(),
                 "needs_setup": self.default_spk is None,
@@ -1137,35 +1158,34 @@ class Pool:
             except ValueError:  # not an HTTP request we understand
                 return await self.api_reply(writer, 400, {"error": "bad request"})
             status, reply = 200, None
-            # Changes (and the settings backup) are only for the machine itself, or the dashboard with the app's
-            # shared secret (the Umbrel app runs the dashboard in its own container). With a secret set, reading
-            # needs it too: the stats show payout addresses, miner names and addresses on your network.
+            # Only the machine itself, or the dashboard with the app's shared secret (the Umbrel app runs the
+            # dashboard in its own container), may use it, for reading too: the stats show payout addresses, miner
+            # names and addresses on your network. Without a secret set, only the machine itself.
             secret = os.environ.get("SOLO45_API_TOKEN", "")
-            local = (writer.get_extra_info("peername") or ("",))[0] == "127.0.0.1"
+            local = (writer.get_extra_info("peername") or ("",))[0] in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
             trusted = local or (secret and hmac.compare_digest(token, secret))
-            if not trusted and secret:
-                status, reply = 403, {"error": "the pool's API needs the app's token; the Solo45 dashboard shows everything"}
+            if not trusted:
+                status, reply = 403, {"error": "the pool's API needs the app's token; the Solo45 dashboard shows everything"
+                                      if secret else "set SOLO45_API_TOKEN (the same on the pool and the dashboard) to use "
+                                      "the pool's API from another machine or container"}
             elif method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy", "/api/payout", "/api/restore"):
-                if not trusted:
-                    status, reply = 403, {"error": "settings can only be changed from the Umbrel"}
-                else:
-                    try:
-                        size = min(length, 200000 if path == "/api/restore" else 4096)
-                        data = json.loads(await asyncio.wait_for(reader.readexactly(size), 5))
-                        if path == "/api/worker":
-                            status, reply = await self.set_override(data)
-                        elif path == "/api/policy":
-                            status, reply = await self.set_policy(data)
-                        elif path == "/api/payout":
-                            status, reply = await self.set_payout(data)
-                        elif path == "/api/restore":
-                            status, reply = await self.restore_settings(data)
-                        else:
-                            status, reply = await self.set_settings(data)
-                    except (ValueError, TypeError, AttributeError):
-                        status, reply = 400, {"error": "bad request"}
+                try:
+                    size = min(length, 200000 if path == "/api/restore" else 4096)
+                    data = json.loads(await asyncio.wait_for(reader.readexactly(size), 5))
+                    if path == "/api/worker":
+                        status, reply = await self.set_override(data)
+                    elif path == "/api/policy":
+                        status, reply = await self.set_policy(data)
+                    elif path == "/api/payout":
+                        status, reply = await self.set_payout(data)
+                    elif path == "/api/restore":
+                        status, reply = await self.restore_settings(data)
+                    else:
+                        status, reply = await self.set_settings(data)
+                except (ValueError, TypeError, AttributeError):
+                    status, reply = 400, {"error": "bad request"}
             elif method == "GET" and path == "/api/export":
-                status, reply = (200, self.export_settings()) if trusted else (403, {"error": "only for the dashboard"})
+                reply = self.export_settings()
             elif method == "GET" and path.startswith("/api/shares"):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
                 try:
