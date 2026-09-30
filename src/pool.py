@@ -9,6 +9,7 @@ merkle tree shows up within seconds instead of on the day a block is found.
 import asyncio
 import base64
 import collections
+import ctypes
 import hashlib
 import hmac
 import itertools
@@ -17,6 +18,7 @@ import logging
 import logging.handlers
 import os
 import random
+import signal
 import struct
 import sys
 import time
@@ -35,6 +37,13 @@ VERSION_MASK = 0x1FFFE000
 MAX_DIFF = 1e9  # same ceiling as the per-miner settings
 EN1_SIZE, EN2_SIZE = 4, 8
 CHECK_SPK = b"\x00\x20" + bytes(32)  # stand-in payout script for block checks before a payout address is set
+MAX_CONNS = 2000  # stratum connections in all
+AUTH_WINDOW_S = 120  # a new connection must authorize within this (miners do it within a second)
+
+try:  # glibc keeps memory that Python freed; malloc_trim hands it back to the system (absent elsewhere)
+    malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+except (OSError, AttributeError):
+    malloc_trim = None
 
 DEFAULTS = {
     "stratum_port": 3333,
@@ -44,8 +53,9 @@ DEFAULTS = {
     "rpc_user": "",  # when set, used instead of the cookie file
     "rpc_pass": "",
     "default_address": "",
-    "force_default_address": False,  # ignore addresses in miner usernames
+    "force_default_address": False,  # ignore addresses in miner usernames (new installs start with it on)
     "coinbase_tag": "Solo45",
+    "max_conns_per_ip": 64,  # stratum connections from one address (a miner uses one)
     "start_diff": 10000,
     "min_diff": 256,
     "share_seconds": 5,  # vardiff aims for one share per miner every N seconds
@@ -90,6 +100,7 @@ def push(data):
 
 
 def bits_to_target(bits):
+    # compact form without the sign bit (0x00800000): the node never sends a negative target
     return (bits & 0xFFFFFF) << (8 * ((bits >> 24) - 3))
 
 
@@ -268,19 +279,28 @@ class Worker:
         await asyncio.wait_for(self.writer.drain(), 10)
 
     async def run(self):
+        junk = 0
         try:
             while True:
-                line = await asyncio.wait_for(self.reader.readline(), 900)
+                # 15 minutes of silence ends a miner's connection; one that never authorizes gets 2 minutes
+                wait = 900 if self.authorized else self.connected + AUTH_WINDOW_S - time.time()
+                line = await asyncio.wait_for(self.reader.readline(), max(wait, 0.1))
                 if not line:
                     break
                 try:
                     msg = json.loads(line)
                 except ValueError:
+                    junk += 1
+                    if junk >= 20 and not self.authorized:
+                        log.warning("disconnected %s: it sent %d lines that aren't Stratum", self.ip, junk)
+                        break
                     continue
                 if isinstance(msg, dict):
                     await self.handle(msg)
         except (asyncio.TimeoutError, ConnectionError):
             pass
+        except ValueError:  # readline's limit: a line over 64 KB (Stratum lines are well under 1 KB)
+            log.warning("disconnected %s %s: it sent a line over 64 KB", self.ip, self.name)
         except Exception:
             log.exception("worker %s %s crashed", self.ip, self.name)
         finally:
@@ -337,10 +357,8 @@ class Worker:
     async def authorize(self, params):
         pool = self.pool
         self.user = str(params[0])[:120]
-        address, _, name = self.user.partition(".")
-        spk = None if pool.cfg["force_default_address"] else await pool.script_for(address)
-        if spk is None:
-            address, spk = pool.cfg["default_address"], pool.default_spk
+        name = self.user.partition(".")[2]
+        address, spk = await pool.payout_for(self.user)
         if spk is None:
             log.info("refused %s %s: no payout address yet (set one on the dashboard, or put an address in the miner's username)",
                      self.ip, self.user)
@@ -422,18 +440,20 @@ class Worker:
         key = (self.en1, en2, ntime, nonce, version)
         if key in job.seen:
             self.reject("duplicate", 22, "Duplicate share")
-        job.seen.add(key)
 
         coinbase = job.coinb1 + self.en1 + en2 + job.coinb2(self.spk)
         header = job.header(coinbase, version, ntime, nonce)
         h = int.from_bytes(sha256d(header), "little")
         share_diff = DIFF1 / h if h else float("inf")
-        if h <= job.target:
+        is_block = h <= job.target
+        if is_block:
+            job.seen.add(key)  # before the submission, so a resend while it's under way counts as a duplicate
             await pool.found_block(self, job, header, coinbase, share_diff)
         required = min(self.job_diff.get(job.id, self.diff), self.diff)
         if share_diff < required * (1 - 1e-9):
             self.reject("low-diff", 23, "Low difficulty share")
-        if job.prev_hex != pool.tip:
+        job.seen.add(key)  # only shares that pass the difficulty check: junk shares can't grow this set
+        if job.prev_hex != pool.tip and not is_block:  # a block's verdict is the node's, logged by found_block
             self.reject("stale", 21, "Stale share")
 
         now = time.time()
@@ -446,7 +466,7 @@ class Worker:
         while self.shares and self.shares[0][0] < now - 3600:
             self.shares.popleft()
         self.best = max(self.best, share_diff)
-        pool.share_accepted(self, credit, share_diff, now, block=h <= job.target)
+        pool.share_accepted(self, credit, share_diff, now, block=is_block)
         return True
 
     def share_credit(self, job_id, share_diff):
@@ -538,7 +558,12 @@ class Pool:
         self.share_seq = itertools.count(1)
         self.last_switch = None
         self.proposal = {"ok": None}
+        self.conns = collections.Counter()  # ip -> open stratum connections
+        self.conn_warned = {}  # ip -> when we last logged refusing it
+        self.submitting = 0  # found blocks on their way to the node
+        self.servers = []
         self.state_path = os.path.join(data_dir, "state.json")
+        new_install = not os.path.exists(self.state_path)
         try:
             with open(self.state_path) as f:
                 self.state = json.load(f)
@@ -549,6 +574,8 @@ class Pool:
         self.state.setdefault("accepted_total", 0)
         self.state.setdefault("overrides", {})
         self.state.setdefault("settings", {})  # changed from the dashboard, kept across restarts
+        if new_install:  # a new install pays every miner to the dashboard's address; older ones keep what they had
+            self.state["settings"]["force_default_address"] = True
         self.policy_cfg = policy.load_config(self.state.get("policy"))
         self.policy_heights = collections.OrderedDict()  # height -> what the policy did to its last job
         self.policy_fallback_height = None  # a filtered job failed the block check at this height
@@ -580,16 +607,35 @@ class Pool:
                 return None
         return self.spk_cache[address]
 
+    def force_default(self):
+        """The dashboard's "Always pay my address" switch."""
+        return bool(self.state["settings"].get("force_default_address", self.cfg["force_default_address"]))
+
+    def pays_default(self):
+        """Every miner pays the payout address: the switch is on and an address is set (until one is,
+        miners with an address in their username can still mine)."""
+        return self.force_default() and self.default_spk is not None
+
+    async def payout_for(self, user):
+        """(address, output script) a miner with this username pays: the payout address when "Always pay my
+        address" is on, else a valid address at the start of the username, else the payout address."""
+        address = user.partition(".")[0]
+        spk = None if self.pays_default() else await self.script_for(address)
+        if spk is None:
+            address, spk = self.cfg["default_address"], self.default_spk
+        return address, spk
+
     # -- work
 
     async def update_template(self, clean=False):
         async with self.template_lock:
             t0 = time.time()
             tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
+            node_tpl = tpl
             new_block = tpl["previousblockhash"] != self.tip
             mode, report, filtered = self.policy_cfg["mode"], None, False
-            if mode == "filter":
-                report = policy.evaluate(tpl, self.policy_cfg)
+            if mode == "filter":  # only what the job needs now; the watch rules' counting waits (below)
+                report = policy.evaluate(tpl, self.policy_cfg, watch=False)
                 if report["skipped"] and self.policy_fallback_height != tpl["height"]:
                     tpl, filtered = policy.apply(tpl, report), True
             job = Job("%x" % next(self.job_ids), tpl, self.tag, self.tx_cache)
@@ -612,8 +658,11 @@ class Pool:
             log.info("%s job %s for block %d: %.8f BTC, %d txs, %s bytes, fees %.4f BTC (sent to %d workers in %d ms)",
                      "new-block" if new_block else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
                      "{:,}".format(sum(len(t) for t in job.tx_data)), job.fees / 1e8, len(workers), ms)
-            if mode == "watch":  # only counting, so it runs after the miners already have the job
+            # only counting, so it runs after the miners already have the job
+            if mode == "watch":
                 report = policy.evaluate(tpl, self.policy_cfg)
+            elif report is not None:
+                policy.add_watch(report, node_tpl, self.policy_cfg)
             if report is not None:
                 self.record_policy(report, mode, filtered)
         # the node fully checks every new block's work; routine refreshes at most every 10 s,
@@ -654,11 +703,14 @@ class Pool:
         block_hash = sha256d(header)[::-1].hex()
         log.critical("BLOCK FOUND by %s (%s) at height %d: %s", worker.name, worker.ip, job.height, block_hash)
         loop = asyncio.get_running_loop()
+        self.submitting += 1  # a stop signal waits for this (see stop())
         try:
             result = await loop.run_in_executor(self.submit_executor, lambda: self.rpc.call("submitblock", block_hex, timeout=60))
         except Exception as e:
             result = "error: %s" % e
-        log.critical("submitblock %s: %r", block_hash, result)
+        finally:
+            self.submitting -= 1
+        log.critical("submitblock %s: %s", block_hash, "accepted by the node" if result is None else "the node said %r" % (result,))
         record = {"height": job.height, "hash": block_hash, "worker": worker.name, "ip": worker.ip,
                   "address": worker.address, "diff": share_diff, "value": job.value,
                   "at": time.time(), "result": result}
@@ -769,6 +821,8 @@ class Pool:
                 self.save_state()
             if n % 20 == 0:  # every 5 minutes
                 self.log_stats(now)
+                if malloc_trim:
+                    malloc_trim(0)
 
     def remember_diffs(self, now):
         """Keep each settled miner's automatic difficulty, so it starts there after a restart or update.
@@ -825,6 +879,7 @@ class Pool:
                 "last_switch": self.last_switch,
                 "proposal": self.proposal,
                 "default_address": self.cfg["default_address"],
+                "force_default_address": self.force_default(),
                 "needs_setup": self.default_spk is None,
                 "tag": self.cfg["coinbase_tag"],
                 "template_refresh_s": self.refresh_s(),
@@ -979,10 +1034,12 @@ class Pool:
         asyncio.get_running_loop().create_task(self.update_template())  # apply it to the next job right away
         return 200, dict(self.policy_view(), ok=True)
 
-    def set_settings(self, data):
+    async def set_settings(self, data):
         """Pool-wide settings from the dashboard. Takes effect right away, no restart."""
-        if "template_refresh_s" not in data and "stall_guard_s" not in data:
+        if not {"template_refresh_s", "stall_guard_s", "force_default_address"} & set(data):
             return 400, {"error": "nothing to change"}
+        if "force_default_address" in data and not isinstance(data["force_default_address"], bool):
+            return 400, {"error": "force_default_address must be true or false"}
         if "template_refresh_s" in data:
             secs = float(data["template_refresh_s"])
             if not 1 <= secs <= 120:
@@ -995,8 +1052,25 @@ class Pool:
                 return 400, {"error": "the stall guard must be 20 to 600 seconds, or 0 for off"}
             self.state["settings"]["stall_guard_s"] = guard
             log.info("stall guard %s", "off" if guard == 0 else "set to %g s" % guard)
+        if "force_default_address" in data and data["force_default_address"] != self.force_default():
+            self.state["settings"]["force_default_address"] = data["force_default_address"]
+            log.info("always pay the payout address: %s", "on" if data["force_default_address"] else "off")
+            await self.repay_workers()
         self.save_state()
-        return 200, {"ok": True, "template_refresh_s": self.refresh_s(), "stall_guard_s": self.stall_guard_s()}
+        return 200, {"ok": True, "template_refresh_s": self.refresh_s(), "stall_guard_s": self.stall_guard_s(),
+                     "force_default_address": self.force_default()}
+
+    async def repay_workers(self):
+        """Point connected miners at the address they should pay now; they get it with a fresh job."""
+        changed = 0
+        for w in [w for w in self.workers if w.authorized]:
+            address, spk = await self.payout_for(w.user)
+            if spk is not None and spk != w.spk:
+                w.address, w.spk = address, spk
+                changed += 1
+        if changed:
+            log.info("%d miner%s now pay%s a different address", changed, "s"[changed == 1:], "s"[changed != 1:])
+            asyncio.get_running_loop().create_task(self.update_template(clean=True))
 
     def export_settings(self):
         """Everything set up on the dashboard, for its backup file: no statistics, logs or history."""
@@ -1019,9 +1093,9 @@ class Pool:
         s = data.get("settings") or {}
         if s.get("default_address"):
             await step("payout address", lambda: self.set_payout({"address": s["default_address"]}))
-        timing = {k: s[k] for k in ("template_refresh_s", "stall_guard_s") if k in s}
-        if timing:
-            await step("job and stall-guard timing", lambda: self.set_settings(timing))
+        pool_settings = {k: s[k] for k in ("template_refresh_s", "stall_guard_s", "force_default_address") if k in s}
+        if pool_settings:
+            await step("job timing, stall guard and payout switch", lambda: self.set_settings(pool_settings))
         for name, o in (data.get("overrides") or {}).items():
             if isinstance(o, dict):
                 await step("difficulty for %s" % name, lambda o=o, name=name: self.set_override(dict(o, name=name)))
@@ -1047,24 +1121,31 @@ class Pool:
         return 200, {"ok": not errors, "restored": done, "errors": errors}
 
     async def serve_api(self, reader, writer):
+        method = path = "?"
         try:
-            method, path = (await asyncio.wait_for(reader.readline(), 5)).decode().split()[:2]
-            length, token = 0, ""
-            while True:
-                line = await asyncio.wait_for(reader.readline(), 5)
-                if line in (b"\r\n", b"\n", b""):
-                    break
-                if line.lower().startswith(b"content-length:"):
-                    length = int(line.split(b":")[1])
-                elif line.lower().startswith(b"x-solo45-token:"):
-                    token = line.split(b":", 1)[1].strip().decode(errors="replace")
+            try:
+                method, path = (await asyncio.wait_for(reader.readline(), 5)).decode().split()[:2]
+                length, token = 0, ""
+                while True:
+                    line = await asyncio.wait_for(reader.readline(), 5)
+                    if line in (b"\r\n", b"\n", b""):
+                        break
+                    if line.lower().startswith(b"content-length:"):
+                        length = max(0, int(line.split(b":", 1)[1]))
+                    elif line.lower().startswith(b"x-solo45-token:"):
+                        token = line.split(b":", 1)[1].strip().decode(errors="replace")
+            except ValueError:  # not an HTTP request we understand
+                return await self.api_reply(writer, 400, {"error": "bad request"})
             status, reply = 200, None
-            # settings changes (and the settings backup) are only for the Umbrel itself, or the dashboard with
-            # the app's shared secret (the Umbrel app runs the dashboard in its own container)
+            # Changes (and the settings backup) are only for the machine itself, or the dashboard with the app's
+            # shared secret (the Umbrel app runs the dashboard in its own container). With a secret set, reading
+            # needs it too: the stats show payout addresses, miner names and addresses on your network.
             secret = os.environ.get("SOLO45_API_TOKEN", "")
             local = (writer.get_extra_info("peername") or ("",))[0] == "127.0.0.1"
             trusted = local or (secret and hmac.compare_digest(token, secret))
-            if method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy", "/api/payout", "/api/restore"):
+            if not trusted and secret:
+                status, reply = 403, {"error": "the pool's API needs the app's token; the Solo45 dashboard shows everything"}
+            elif method == "POST" and path in ("/api/worker", "/api/settings", "/api/policy", "/api/payout", "/api/restore"):
                 if not trusted:
                     status, reply = 403, {"error": "settings can only be changed from the Umbrel"}
                 else:
@@ -1080,32 +1161,54 @@ class Pool:
                         elif path == "/api/restore":
                             status, reply = await self.restore_settings(data)
                         else:
-                            status, reply = self.set_settings(data)
+                            status, reply = await self.set_settings(data)
                     except (ValueError, TypeError, AttributeError):
                         status, reply = 400, {"error": "bad request"}
             elif method == "GET" and path == "/api/export":
                 status, reply = (200, self.export_settings()) if trusted else (403, {"error": "only for the dashboard"})
             elif method == "GET" and path.startswith("/api/shares"):
                 query = urllib.parse.parse_qs(urllib.parse.urlparse(path).query)
-                since = int((query.get("since") or ["0"])[0])
+                try:
+                    since = int((query.get("since") or ["0"])[0])
+                except ValueError:
+                    since = 0
                 reply = {"shares": [s for s in self.share_log if s["seq"] > since]}
             elif method == "GET":
                 reply = self.snapshot()
             else:
                 status, reply = 405, {"error": "method not allowed"}
-            body = json.dumps(reply).encode()
-            reason = {200: b"OK", 400: b"Bad Request", 403: b"Forbidden", 405: b"Method Not Allowed"}[status]
-            writer.write(b"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\n"
-                         b"Access-Control-Allow-Origin: *\r\nConnection: close\r\n"
-                         b"Content-Length: %d\r\n\r\n" % (status, reason, len(body)) + body)
-            await writer.drain()
+            await self.api_reply(writer, status, reply)
+        except (asyncio.TimeoutError, ConnectionError, asyncio.IncompleteReadError):
+            pass  # the other side went quiet or hung up
         except Exception:
-            pass
+            log.exception("pool API: %s %s failed", method, path[:80])
         finally:
             writer.close()
 
+    @staticmethod
+    async def api_reply(writer, status, reply):
+        body = json.dumps(reply).encode()
+        reason = {200: b"OK", 400: b"Bad Request", 403: b"Forbidden", 405: b"Method Not Allowed"}[status]
+        writer.write(b"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nConnection: close\r\n"
+                     b"Content-Length: %d\r\n\r\n" % (status, reason, len(body)) + body)
+        await writer.drain()
+
     async def serve_stratum(self, reader, writer):
-        await Worker(self, reader, writer).run()
+        ip = (writer.get_extra_info("peername") or ("?",))[0]
+        if self.conns[ip] >= self.cfg["max_conns_per_ip"] or sum(self.conns.values()) >= MAX_CONNS:
+            if time.time() - self.conn_warned.get(ip, 0) > 300:  # at most every 5 minutes per address
+                self.conn_warned[ip] = time.time()
+                log.warning("refused a connection from %s: %d already open from there (limit %d), %d in all",
+                            ip, self.conns[ip], self.cfg["max_conns_per_ip"], sum(self.conns.values()))
+            writer.close()
+            return
+        self.conns[ip] += 1
+        try:
+            await Worker(self, reader, writer).run()
+        finally:
+            self.conns[ip] -= 1
+            if not self.conns[ip]:
+                del self.conns[ip]
 
     async def set_payout(self, data):
         """The payout address for miners that don't put their own address in the username."""
@@ -1117,8 +1220,8 @@ class Pool:
         self.cfg["default_address"], self.default_spk = address, spk
         self.state["settings"]["default_address"] = address
         self.save_state()
-        for w in self.workers:  # miners that were paying the old default address switch at the next job
-            if w.authorized and w.address == old:
+        for w in self.workers:  # miners that were paying the old address (or, with the switch on, all) move over
+            if w.authorized and (w.address == old or self.pays_default()):
                 w.address, w.spk = address, spk
         log.info("payout address set to %s", address)
         asyncio.get_running_loop().create_task(self.update_template(clean=True))
@@ -1134,13 +1237,28 @@ class Pool:
             log.warning("no payout address set yet: open the Solo45 dashboard to set one. Until then only miners "
                         "with a Bitcoin address in their username can connect")
         await self.update_template(clean=True)
-        await asyncio.start_server(self.serve_stratum, "0.0.0.0", self.cfg["stratum_port"], limit=1 << 16)
-        await asyncio.start_server(self.serve_api, "0.0.0.0", self.cfg["api_port"])
+        self.servers = [await asyncio.start_server(self.serve_stratum, "0.0.0.0", self.cfg["stratum_port"], limit=1 << 16),
+                        await asyncio.start_server(self.serve_api, "0.0.0.0", self.cfg["api_port"])]
         loop = asyncio.get_running_loop()
         self.tasks = [loop.create_task(c) for c in (self.watch_blocks(), self.refresh_templates(), self.housekeeping(),
                                                      self.stall_guard_loop())]
-        log.info("stratum on :%d, api on :%d, height %d, pays %s by default",
-                 self.cfg["stratum_port"], self.cfg["api_port"], self.job.height, self.cfg["default_address"])
+        log.info("stratum on :%d, api on :%d, height %d, pays %s by default%s",
+                 self.cfg["stratum_port"], self.cfg["api_port"], self.job.height, self.cfg["default_address"],
+                 " (every miner)" if self.pays_default() else "")
+
+    async def stop(self):
+        """Docker's stop signal (an app update or restart): let a block that's on its way to the node get there,
+        keep the state, then exit, instead of being killed at the end of the grace period."""
+        log.info("stopping")
+        for server in self.servers:
+            server.close()
+        for _ in range(250):  # up to 25 s, inside the app's 30 s grace period
+            if not self.submitting:
+                break
+            await asyncio.sleep(0.1)
+        self.remember_diffs(time.time())
+        self.save_state()
+        log.info("stopped")
 
 
 # Environment settings (used by the Umbrel app) win over config.json.
@@ -1175,9 +1293,15 @@ def setup_logging(path):
 
 async def main():
     setup_logging(os.path.join(DATA_DIR, "pool.log"))
+    # In a container this is the first process, which ignores signals it has no handler for: without these,
+    # every app update would wait out the grace period and then kill the pool.
+    stop = asyncio.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        asyncio.get_running_loop().add_signal_handler(sig, stop.set)
     pool = Pool(load_config())
     await pool.start()
-    await asyncio.Event().wait()
+    await stop.wait()
+    await pool.stop()
 
 
 if __name__ == "__main__":

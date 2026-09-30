@@ -43,7 +43,8 @@ umbrelOS shows a warning when you add a community app store, because its apps ar
 | Password | anything, for example `x` |
 
 - The **worker name** (after the dot) is how the miner shows up on the dashboard.
-- The **address** (before the dot) is where a block found by that miner is paid. If it isn't a valid address, Solo45 pays the payout address you set on the dashboard, so `x.Bitaxe1` works too.
+- With **Always pay my address** on (the default for new installs), every miner pays the payout address you set on the dashboard, whatever its username says, so `x.Bitaxe1` works fine.
+- With it off, the **address** (before the dot) is where a block found by that miner is paid, handy for a friend's miner. If it isn't a valid address, Solo45 pays your payout address.
 - Any Stratum v1 miner works; version rolling (ASICBoost) is supported.
 - Keep a **backup pool** set on each miner (another solo pool), so they keep hashing while Solo45 or your Umbrel restarts.
 
@@ -62,7 +63,7 @@ The dashboard also works on a phone, and can be added to your home screen as an 
 - **Top line:** fleet hashrate, power and electricity cost, chance of a block today and this year, expected time to a block, best share ever.
 - **Latest block:** how many milliseconds after your node accepted the block each miner got new work.
 - **Miners:** status, pool, hashrate, power and cost, J/TH, temperature trend, best share, shares, the block each miner is working on, uptime.
-- **Solo45 settings:** payout address, how often jobs refresh, the stall guard, and share difficulty per miner.
+- **Solo45 settings:** payout address and the "Always pay my address" switch, how often jobs refresh, the stall guard, and share difficulty per miner.
 - **Template policy:** the rules, what they skipped per block, and totals for the last 24 hours, 7 days and 30 days.
 - **Phone alerts, best share today, network and node, live shares, recent blocks, the AI assistant, backup and restore.**
 
@@ -82,11 +83,12 @@ Solo45 is a normal Docker app. You need a Bitcoin Core (or Knots) node with RPC 
 ```yaml
 services:
   pool:
-    image: ghcr.io/race45race/solo45:v0.1.15
+    image: ghcr.io/race45race/solo45:v0.1.20
     command: ["python", "/app/pool.py"]
     restart: on-failure
+    stop_grace_period: 30s                 # lets a found block reach the node before the pool stops
     ports:
-      - "3333:3333"                        # stratum for your miners
+      - "3333:3333"                        # stratum for your miners (don't publish 3380, the pool's API)
     volumes:
       - ./data/pool:/data/pool
     environment:
@@ -97,7 +99,7 @@ services:
       BITCOIN_RPC_PASS: your-rpc-password
 
   dashboard:
-    image: ghcr.io/race45race/solo45:v0.1.15
+    image: ghcr.io/race45race/solo45:v0.1.20
     command: ["python", "/app/server.py"]
     restart: on-failure
     ports:
@@ -116,14 +118,15 @@ services:
       BITCOIN_RPC_PASS: your-rpc-password
 ```
 
-> **Important:** outside Umbrel there is no login in front of the dashboard. Anyone who can open port 8099 can change settings, including the payout address. Only run it on a network you trust, or put it behind a reverse proxy with a password.
+> **Important:** outside Umbrel there is no login in front of the dashboard. Anyone who can open port 8099 can see your miners and change settings, including the payout address. Only run it on a network you trust, or put it behind a reverse proxy with a password. The pool's own API (port 3380) answers only requests carrying `SOLO45_API_TOKEN`, so set a long random one and leave that port unpublished.
 
 Both programs also run straight from the source with Python 3 (tested with 3.13): `python3 src/pool.py` and `python3 src/server.py`. `python3 src/selftest.py` checks the pool against your live node (block hashing, merkle roots, templates the node accepts, the template policy and more).
 
 ## Security and privacy
 
-- The stratum port (3333) is open to your local network, because your miners need it.
-- Settings can only be changed through the Umbrel login. The pool's own API only takes changes from the dashboard, with a per-install secret.
+- The stratum port (3333) is open to your local network, because your miners need it. **Don't forward it to the internet.** Solo45 limits connections per address and drops connections that don't log in within 2 minutes, but it's built for a home network.
+- Settings can only be changed, and the live data only read, through the Umbrel login. The pool's own API only answers the dashboard, with a per-install secret.
+- With **Always pay my address** on, nobody else on your network can point a miner at your pool and mine to their own address.
 - No telemetry. Solo45 only talks to your node and your miners, plus [ntfy](https://ntfy.sh) and Anthropic if you turn on alerts or the AI assistant.
 - The settings backup file contains your payout address and alert topic: keep it private.
 
@@ -137,7 +140,7 @@ Both programs also run straight from the source with Python 3 (tested with 3.13)
 
 **Does it work with Bitcoin Knots?** It only uses standard RPC and ZMQ, so it should, including through Umbrel's alternative node apps. So far it has been tested with Bitcoin Core 31.1.
 
-**Raspberry Pi?** The images are built for arm64 and amd64. So far Solo45 has been tested on an x86 Umbrel. Raspberry Pi testers are very welcome.
+**Raspberry Pi?** The images are built for arm64 and amd64, and every release's tests also run on real ARM hardware. The pool settles at about 80 MB of memory and checks a full block template in about 20 ms on the author's x86 Umbrel. Raspberry Pi testers are very welcome.
 
 **What does the template policy cost me?** Only the fees of the transactions you leave out. The dashboard shows it per block and for the last 24 hours, 7 days and 30 days. Use Watch mode to see the cost of a rule before you turn it on.
 

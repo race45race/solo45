@@ -10,11 +10,13 @@ The optional Claude assistant (ai.py) needs the anthropic library from ./venv.
 """
 import base64
 import collections
+import ctypes
 import json
 import math
 import os
 import queue
 import re
+import signal
 import socket
 import threading
 import time
@@ -44,7 +46,7 @@ NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protec
 CFG = {
     "port": 8099,
     "bitcoin_log": NODE_DIR + "/debug.log",
-    "ckpool_log": os.environ.get("GOBRRR_LOG") or HOME + "/umbrel/app-data/gobrrr-pool/data/ckpool-logs/ckpool.log",
+    "ckpool_log": os.environ.get("GOBRRR_LOG") or "",  # a ckpool-based pool's log (e.g. Go Brrr), for its timings
     "miners": [],   # extra miner IPs, on top of those connected to Solo45 (or found in a ckpool log)
     "ignore": [],   # miner IPs to leave out entirely
     "pools": {"23334": "Datum", "21420": "Go Brrr", "21422": "Go Brrr (high diff)", "3333": "Solo45"},
@@ -89,6 +91,11 @@ except Exception as e:  # a broken or missing assistant must never take the dash
     ai = None
     print("AI assistant disabled:", e, flush=True)
 assistant = None
+
+try:  # glibc keeps memory that Python freed in per-thread pools; malloc_trim hands it back (absent elsewhere)
+    malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
+except (OSError, AttributeError):
+    malloc_trim = None
 
 lock = threading.RLock()
 subscribers = set()
@@ -340,11 +347,11 @@ def solo45_loop():
     last_seq, last_uptime = 0, 0.0
     while True:
         try:
-            d = http_json(CFG["solo45_api"], timeout=3)
+            d = http_json(CFG["solo45_api"], timeout=3, headers=pool_headers())
             if d.get("uptime", 0) < last_uptime:
                 last_seq = 0  # the pool restarted, so its share numbers start again at 1
             last_uptime = d.get("uptime", 0)
-            new = http_json("%s?since=%d" % (CFG["solo45_shares_api"], last_seq), timeout=3)["shares"]
+            new = http_json("%s?since=%d" % (CFG["solo45_shares_api"], last_seq), timeout=3, headers=pool_headers())["shares"]
             if new:
                 last_seq = new[-1]["seq"]
                 with lock:
@@ -492,9 +499,15 @@ def node_loop():
 
 # ------------------------------------------------------------- miner polling
 
-def http_json(url, timeout=3):
-    with urllib.request.urlopen(url, timeout=timeout) as r:
+def http_json(url, timeout=3, headers=None):
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {}), timeout=timeout) as r:
         return json.load(r)
+
+
+def pool_headers():
+    """The Umbrel app's shared secret, which the pool's API asks for (for reading too, since v0.1.20)."""
+    token = os.environ.get("SOLO45_API_TOKEN")
+    return {"X-Solo45-Token": token} if token else {}
 
 
 def cgminer(ip, cmd, timeout=3):
@@ -727,7 +740,8 @@ def poll_loop():
                 tip = S["tip"]
                 if tip and tip["live"]:
                     save_blocks()
-        interval = 0.5 if fast else CFG["poll_seconds"]
+        # after a block: every 0.2 s for 2 s (a Bitaxe switches in well under a second), then every 0.5 s
+        interval = (0.2 if fast_poll_until - start > 6 else 0.5) if fast else CFG["poll_seconds"]
         # wait out the interval, but start fast polling at once if a block arrives meanwhile
         new_block.wait(max(0.1, interval - (time.time() - start)))
         new_block.clear()
@@ -926,6 +940,17 @@ def save_blocks():
         pass
 
 
+def save_all():
+    """What the loops save every 30 s to 5 min, saved at once (on the way out, so an update loses nothing)."""
+    with lock:
+        for path, key in ((HISTORY_PATH, "history"), (TEMPS_PATH, "temps"), (DAILY_PATH, "daily"), (WORK_PATH, "work")):
+            try:
+                save_json(path, S[key])
+            except OSError as e:
+                print("couldn't save %s: %s" % (path, e), flush=True)
+    save_blocks()
+
+
 def miner_raw(ip):
     """Everything a miner reports, for the assistant."""
     if ip not in miner_ips():
@@ -1051,9 +1076,7 @@ def default_gateway(route_file="/proc/net/route"):
 
 
 def post_json(url, data, timeout=5):
-    headers = {"Content-Type": "application/json"}
-    if os.environ.get("SOLO45_API_TOKEN"):  # the Umbrel app's shared secret for changing Solo45 settings
-        headers["X-Solo45-Token"] = os.environ["SOLO45_API_TOKEN"]
+    headers = dict(pool_headers(), **{"Content-Type": "application/json"})
     req = urllib.request.Request(url, json.dumps(data).encode(), headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -1116,6 +1139,8 @@ def history_loop():
             except OSError:
                 pass
             last_save = time.time()
+            if malloc_trim:  # the dashboard's many threads leave freed memory behind; give it back every 5 min
+                malloc_trim(0)
 
 
 def state_push_loop():
@@ -1381,9 +1406,7 @@ BACKUP_NOTIFY_KEYS = ("on", "server", "topic", "after_min", "events")
 
 
 def solo45_get(path, timeout=5):
-    headers = {"X-Solo45-Token": os.environ["SOLO45_API_TOKEN"]} if os.environ.get("SOLO45_API_TOKEN") else {}
-    with urllib.request.urlopen(urllib.request.Request(SOLO45 + path, headers=headers), timeout=timeout) as r:
-        return json.load(r)
+    return http_json(SOLO45 + path, timeout=timeout, headers=pool_headers())
 
 
 def make_backup():
@@ -1457,6 +1480,10 @@ MANIFEST = json.dumps({  # lets phones add the dashboard to the home screen as a
 }).encode()
 
 
+PRIVATE_READS = ("/api/state", "/api/shares", "/events", "/api/ai/status")
+refused_at = {}  # ip -> when a refusal from it was last logged
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1473,6 +1500,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        # the live data shows payout addresses and the miners' addresses on your network: through the Umbrel
+        # login only (the home-screen widget's four numbers stay open, umbrelOS fetches those itself)
+        if path in PRIVATE_READS and not self.from_proxy("a read of " + path):
+            return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
         if path in ("/", "/index.html"):
             with open(INDEX, "rb") as f:
                 self.send(200, f.read(), "text/html; charset=utf-8")
@@ -1496,7 +1527,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/widget":  # fetched by umbrelOS for the home-screen widget
             self.send(200, json.dumps(widget()).encode(), "application/json")
         elif path == "/api/backup":
-            if not self.from_proxy():  # it holds the payout address and alert topic
+            if not self.from_proxy("a settings backup"):  # it holds the payout address and alert topic
                 return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
             try:
                 body = json.dumps(make_backup(), indent=1).encode()
@@ -1510,7 +1541,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
         elif path == "/api/notify/status":
-            if not self.from_proxy():  # the topic is what lets someone read the alerts, so only behind the login
+            if not self.from_proxy("a read of the alert settings"):  # the topic lets someone read the alerts
                 return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
             self.send(200, json.dumps(notify_status()).encode(), "application/json")
         elif path == "/events":
@@ -1537,10 +1568,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send(404, b"not found", "text/plain")
 
-    def from_proxy(self):
+    def from_proxy(self, what="a change"):
         """In the Umbrel app, other apps can reach this server directly on the app network, bypassing the
-        Umbrel login, so changes are only accepted from the Umbrel login: umbrelOS's app gateway, which
-        connects from the host (the container's default gateway), or an app_proxy container
+        Umbrel login, so changes (and private reads) are only accepted from the Umbrel login: umbrelOS's app
+        gateway, which connects from the host (the container's default gateway), or an app_proxy container
         (SOLO45_PROXY_HOST) on umbrelOS versions that use one."""
         host = os.environ.get("SOLO45_PROXY_HOST")
         if not host:
@@ -1553,9 +1584,11 @@ class Handler(BaseHTTPRequestHandler):
             allowed |= {a[4][0] for a in socket.getaddrinfo(host, None)}
         except OSError:
             pass
-        ok = self.client_address[0] in allowed
-        if not ok:
-            print("refused a change from %s (accepted: %s)" % (self.client_address[0], ", ".join(sorted(allowed)) or "none"), flush=True)
+        ip = self.client_address[0]
+        ok = ip in allowed
+        if not ok and time.time() - refused_at.get(ip, 0) > 60:  # log it, at most once a minute per address
+            refused_at[ip] = time.time()
+            print("refused %s from %s (accepted: %s)" % (what, ip, ", ".join(sorted(allowed)) or "none"), flush=True)
         return ok
 
     def do_POST(self):
@@ -1636,7 +1669,7 @@ def main():
         feed = (tip_poll_loop, ())
     loops = [feed, (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
              (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ())]
-    if os.path.exists(CFG["ckpool_log"]):  # only when a ckpool-based pool (like Go Brrr) runs on this Umbrel
+    if CFG["ckpool_log"] and os.path.exists(CFG["ckpool_log"]):  # a ckpool-based pool (like Go Brrr) on this Umbrel
         print("reading the ckpool log for Go Brrr timings...", flush=True)
         try:
             with open(CFG["ckpool_log"], "r", errors="replace") as f:
@@ -1649,8 +1682,14 @@ def main():
         threading.Thread(target=target, args=args, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", CFG["port"]), Handler)
     srv.daemon_threads = True
+    # Docker's stop signal (an app update or restart): save and exit, instead of being killed at the end of the
+    # grace period (as a container's first process this one ignores signals it has no handler for).
+    # shutdown() waits for serve_forever to return, so it can't run in this thread, where serve_forever is.
+    signal.signal(signal.SIGTERM, lambda *_: threading.Thread(target=srv.shutdown, daemon=True).start())
     print("Solo Mining Dashboard on port %d" % CFG["port"], flush=True)
     srv.serve_forever()
+    save_all()
+    print("stopped", flush=True)
 
 
 if __name__ == "__main__":

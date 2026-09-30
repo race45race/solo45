@@ -47,8 +47,9 @@ def read_varint(b, i):
     return int.from_bytes(b[i + 1:i + 1 + size], "little"), i + 1 + size
 
 
-def parse_tx(raw):
-    """Return (output scripts, witness stacks). Raises on malformed data."""
+def parse_tx(raw, read_witness=True):
+    """Return (output scripts, witness stacks). Raises on malformed data. With read_witness=False it stops
+    after the outputs and returns no witness stacks (reading the signatures is most of the work)."""
     i = 4
     segwit = raw[i] == 0 and raw[i + 1] == 1
     if segwit:
@@ -56,16 +57,20 @@ def parse_tx(raw):
     n_in, i = read_varint(raw, i)
     for _ in range(n_in):
         i += 36
-        slen, i = read_varint(raw, i)
+        slen = raw[i]  # script lengths under 253 take one byte: skip the function call for them
+        slen, i = (slen, i + 1) if slen < 0xFD else read_varint(raw, i)
         i += slen + 4
     n_out, i = read_varint(raw, i)
     outputs = []
     for _ in range(n_out):
         i += 8
-        slen, i = read_varint(raw, i)
+        slen = raw[i]
+        slen, i = (slen, i + 1) if slen < 0xFD else read_varint(raw, i)
         outputs.append(raw[i:i + slen])
         i += slen
     witnesses = []
+    if not read_witness:
+        return outputs, witnesses
     if segwit:
         for _ in range(n_in):
             n_items, i = read_varint(raw, i)
@@ -137,6 +142,9 @@ def has_envelope(script):
 def is_bare_multisig(spk):
     """OP_m <pubkey>... OP_n OP_CHECKMULTISIG, read opcode by opcode (a taproot output also starts
     with OP_1, and its 32-byte key can end in the byte 0xae)."""
+    # the shortest one (1-of-1, compressed key) is 37 bytes; almost every output fails this quick look
+    if len(spk) < 37 or spk[-1] != OP_CHECKMULTISIG or not 0x51 <= spk[0] <= 0x60:
+        return False
     ops = list(script_ops(spk))
     if len(ops) < 4 or ops[-1] != (OP_CHECKMULTISIG, None):
         return False
@@ -145,24 +153,35 @@ def is_bare_multisig(spk):
             and all(data is not None and len(data) in (33, 65) for _, data in keys))
 
 
-def classify(tx, rules):
+def content_rules(rules):
+    """The content rules that are on, read once per template: (Runes, OP_RETURN byte limit or None,
+    bare multisig, inscriptions)."""
+    on = lambda name: bool(rules.get(name, {}).get("on"))
+    return (on("runes"), rules["opreturn"].get("max_bytes", 83) if on("opreturn") else None,
+            on("baremultisig"), on("inscriptions"))
+
+
+def classify(tx, rules, prepared=None):
     """The content rules this template transaction breaks (empty list = keep it). The fee rule is
-    judged on whole packages in evaluate()."""
+    judged on whole packages in evaluate(). prepared is content_rules(rules), so a template's
+    thousands of transactions don't each look the rules up again."""
+    runes, op_limit, multisig, inscriptions = prepared or content_rules(rules)
     reasons = []
     try:
-        outputs, witnesses = parse_tx(bytes.fromhex(tx["data"]))
+        raw = bytes.fromhex(tx["data"])
+        # an envelope starts with the bytes 00 63 (OP_FALSE OP_IF), so without them there's no witness to read
+        outputs, witnesses = parse_tx(raw, read_witness=inscriptions and b"\x00\x63" in raw)
     except (ValueError, IndexError, KeyError):
         return reasons  # can't read it: leave the decision to the node
-    on = lambda name: rules.get(name, {}).get("on")
-    if on("runes") and any(o[:2] == bytes([OP_RETURN, OP_13]) for o in outputs):
-        reasons.append("runes")
-    if on("opreturn"):
-        limit = rules["opreturn"].get("max_bytes", 83)
-        if any(o[:1] == bytes([OP_RETURN]) and len(o) > limit for o in outputs):
-            reasons.append("opreturn")
-    if on("baremultisig") and any(is_bare_multisig(o) for o in outputs):
-        reasons.append("baremultisig")
-    if on("inscriptions"):
+    rune = big_op_return = bare = False
+    for o in outputs:  # one pass for the three output rules
+        if o and o[0] == OP_RETURN:
+            rune = rune or (runes and len(o) > 1 and o[1] == OP_13)
+            big_op_return = big_op_return or (op_limit is not None and len(o) > op_limit)
+        elif multisig and not bare:
+            bare = is_bare_multisig(o)
+    reasons += [name for name, hit in (("runes", rune), ("opreturn", big_op_return), ("baremultisig", bare)) if hit]
+    if inscriptions:
         for stack in witnesses:
             leaf = tapscript(stack)
             if leaf and has_envelope(leaf):
@@ -200,6 +219,11 @@ def low_fee(txs, candidates, sat_vb):
     low, seen = set(), set()
     for start in sorted(candidates):
         if start in seen:
+            continue
+        if not parents[start] and not children[start]:  # most transactions stand alone: their own rate decides
+            seen.add(start)
+            if fee[start] / size[start] < sat_vb:
+                low.add(start)
             continue
         cluster, stack = set(), [start]  # everything linked to it by spending, in either direction
         while stack:
@@ -243,28 +267,34 @@ def select(txs, found, rules, names):
     return skip
 
 
-def evaluate(tpl, cfg):
-    """What the rules take out of this template ("skip", used in filter mode), and what the rules set to
-    watch would take out on top of that ("watch", only counted)."""
-    rules = cfg.get("rules", {})
-    state = {name: rule_state(rule) for name, rule in rules.items()}
+def rule_sets(cfg):
+    """(rules that count, rules applied to the template) for this config."""
+    state = {name: rule_state(rule) for name, rule in cfg.get("rules", {}).items()}
     counted = {name for name, s in state.items() if s != "off"}
     applied = {name for name, s in state.items() if s == "filter"} if cfg.get("mode") == "filter" else set()
+    return counted, applied
+
+
+def tally(txs, part):
+    by_rule = {}
+    for n, reasons in part.items():  # count each transaction once, under its first reason
+        entry = by_rule.setdefault(reasons[0], {"txs": 0, "fees": 0})
+        entry["txs"] += 1
+        entry["fees"] += txs[n].get("fee", 0)
+    return by_rule
+
+
+def evaluate(tpl, cfg, watch=True):
+    """What the rules take out of this template ("skip", used in filter mode), and what the rules set to
+    watch would take out on top of that ("watch", only counted). With watch=False only the part a job
+    needs is worked out, and add_watch() does the rest once the miners have their work."""
+    rules = cfg.get("rules", {})
+    counted, applied = rule_sets(cfg)
     txs = tpl["transactions"]
-    found = [classify(tx, rules) for tx in txs]
+    prepared = content_rules(rules)
+    found = [classify(tx, rules, prepared) for tx in txs]
     skip = select(txs, found, rules, applied)
-    would = select(txs, found, rules, counted) if counted != applied else skip
-    watch = {n: reasons for n, reasons in would.items() if n not in skip}
-
-    def tally(part):
-        by_rule = {}
-        for n, reasons in part.items():  # count each transaction once, under its first reason
-            entry = by_rule.setdefault(reasons[0], {"txs": 0, "fees": 0})
-            entry["txs"] += 1
-            entry["fees"] += txs[n].get("fee", 0)
-        return by_rule
-
-    return {
+    report = {
         "height": tpl["height"],
         "txs": len(txs),
         "fees": sum(t.get("fee", 0) for t in txs),
@@ -272,15 +302,30 @@ def evaluate(tpl, cfg):
         "skipped": len(skip),
         "fees_skipped": sum(txs[n].get("fee", 0) for n in skip),
         "weight_skipped": sum(txs[n].get("weight", 0) for n in skip),
-        "by_rule": tally(skip),
+        "by_rule": tally(txs, skip),
         "examples": [{"txid": txs[n]["txid"], "rule": skip[n][0]} for n in list(skip)[:5]],
+        "found": found,
+    }
+    return add_watch(report, tpl, cfg) if watch else report
+
+
+def add_watch(report, tpl, cfg):
+    """The watch part of evaluate(): what the rules set to watch would skip on top of what was skipped.
+    tpl is the template evaluate() was given (before apply())."""
+    rules = cfg.get("rules", {})
+    counted, applied = rule_sets(cfg)
+    txs, skip, found = tpl["transactions"], report["skip"], report.pop("found")
+    would = select(txs, found, rules, counted) if counted != applied else skip
+    watch = {n: reasons for n, reasons in would.items() if n not in skip}
+    report.update({
         "watch": watch,
         "watched": len(watch),
         "fees_watched": sum(txs[n].get("fee", 0) for n in watch),
         "weight_watched": sum(txs[n].get("weight", 0) for n in watch),
-        "watch_by_rule": tally(watch),
+        "watch_by_rule": tally(txs, watch),
         "watch_examples": [{"txid": txs[n]["txid"], "rule": watch[n][0]} for n in list(watch)[:5]],
-    }
+    })
+    return report
 
 
 def merkle_root(hashes):

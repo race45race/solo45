@@ -160,6 +160,7 @@ button.btn.small { font-size: 12px; padding: 3px 9px; }
 .setting-ctl select, .setting-ctl input { font: inherit; font-size: 12.5px; padding: 3px 6px; border-radius: 6px;
   border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .setting-ctl input { width: 90px; }
+.setting-ctl input[type=checkbox] { width: auto; margin: 0 4px 0 0; vertical-align: -2px; }
 .feed { font-family: var(--mono); font-size: 12.5px; max-height: 360px; overflow-y: auto; display: grid; gap: 1px; }
 .feed .row { display: grid; grid-template-columns: 70px 84px 1fr 16px; gap: 10px; padding: 3px 6px; border-radius: 5px; align-items: center; }
 .feed .row .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -325,6 +326,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <button class="btn small" id="refreshSave" type="button">Save</button>
       <span class="muted" id="refreshNote"></span>
     </div>
+    <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="guardS">Stall guard:</label>
       <input type="number" id="guardS" min="0" max="600" step="5" style="width:70px"> <span>seconds (0 = off)</span>
@@ -338,8 +340,12 @@ body.privacy .sensitive { filter: blur(6px); }
       <button class="btn small" id="paySave" type="button">Save</button>
       <span class="muted" id="payNote"></span>
     </div>
-    <div class="ai-foot" style="margin:0 0 14px">Where a found block's reward goes, for miners that don't put their own address in their username. Your node checks the address before it's saved.</div>
-    <div class="ai-foot" style="margin:0 0 14px">How often Solo45 sends fresh work with the latest transactions on the same block (1–120 s). New blocks are always sent instantly no matter what this is set to. Shorter picks up new fees sooner; longer means fewer job changes.</div>
+    <div class="ai-foot" style="margin:0 0 6px">Where a found block's reward goes. Your node checks the address before it's saved.</div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label><input type="checkbox" id="payForce"> <b>Always pay my address</b></label>
+      <span class="muted" id="payForceNote"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px">On: every miner pays the address above, whatever its username says, so nobody else on your network can mine to their own address on your pool. Off: a miner with a Bitcoin address at the start of its username (address.name) pays that address instead, handy for a friend's miner.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="kwhPrice">Electricity price:</label>
       <input type="text" id="kwhCur" maxlength="3" aria-label="Currency symbol" style="width:44px;text-align:center">
@@ -525,7 +531,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <input type="file" id="bkFile" accept=".json,application/json" hidden>
       <span class="muted" id="bkNote"></span>
     </div>
-    <div class="ai-foot" style="margin:6px 0 0"><span>The file holds your payout address, per-miner difficulty, template policy, job and stall-guard timing, electricity price, AI limits and notes, and phone-alert settings including the topic, so keep it private. It doesn't include your AI key, an ntfy access token, statistics or logs. Restoring adds and replaces those settings; miners that aren't in the file keep theirs.</span></div>
+    <div class="ai-foot" style="margin:6px 0 0"><span>The file holds your payout address and the "Always pay my address" switch, per-miner difficulty, template policy, job and stall-guard timing, electricity price, AI limits and notes, and phone-alert settings including the topic, so keep it private. It doesn't include your AI key, an ntfy access token, statistics or logs. Restoring adds and replaces those settings; miners that aren't in the file keep theirs.</span></div>
   </section>
 
   <footer>
@@ -873,6 +879,7 @@ function renderMiners(s) {
 // ---- Solo45 share difficulty (the table is rebuilt only when miners or settings change,
 // so the inputs aren't wiped while you type; the numbers update in place)
 let soloSig = "";
+let payForceBusy = false;  // while the payout switch saves, live updates don't flip it back
 const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
 function renderSolo(s) {
   const so = s.solo45 || {};
@@ -888,6 +895,7 @@ function renderSolo(s) {
     }
   }
   if (so.default_address != null && document.activeElement !== $("payAddr")) $("payAddr").value = so.default_address;
+  if (so.force_default_address != null && !payForceBusy) $("payForce").checked = !!so.force_default_address;
   if (so.template_refresh_s != null && document.activeElement !== $("refreshS")) {
     $("refreshS").value = so.template_refresh_s;
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
@@ -1005,6 +1013,21 @@ $("guardSave").addEventListener("click", async () => {
   $("guardS").blur();
 });
 $("paySave").addEventListener("click", () => savePayout($("payAddr"), $("paySave"), $("payNote")));
+$("payForce").addEventListener("change", async () => {
+  const on = $("payForce").checked;
+  payForceBusy = true;
+  $("payForceNote").textContent = "Saving…";
+  try {
+    const r = await fetch("/api/solo45/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({force_default_address: on})});
+    const j = await r.json();
+    if (r.ok) $("payForceNote").textContent = j.force_default_address ? "Saved: every miner pays your address" : "Saved: miners can pay the address in their username";
+    else { $("payForceNote").textContent = `Not saved: ${j.error || r.status}`; $("payForce").checked = !on; }
+  } catch (e) {
+    $("payForceNote").textContent = "Not saved: " + e.message;
+    $("payForce").checked = !on;
+  }
+  payForceBusy = false;
+});
 
 // ---- template policy
 const polReason = r => ({inscriptions: "inscriptions", runes: "Runes", opreturn: "OP_RETURN", baremultisig: "bare multisig",

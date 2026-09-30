@@ -8,6 +8,8 @@ WORKDIR /app
 COPY src/ /app/
 RUN python -m compileall -q /app
 
-ENV PYTHONUNBUFFERED=1
+# MALLOC_ARENA_MAX: glibc gives each thread its own memory pool, and the dashboard's many threads left
+# ~150 MB of freed memory in them; two pools keep freed memory reused instead.
+ENV PYTHONUNBUFFERED=1 MALLOC_ARENA_MAX=2
 EXPOSE 3333 3380 8099
 CMD ["python", "/app/pool.py"]
