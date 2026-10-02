@@ -302,6 +302,12 @@ asyncio.run(pool_tests())
 server.save_all()
 check("dashboard saves everything on the way out", all(os.path.exists(p) for p in (
     server.HISTORY_PATH, server.TEMPS_PATH, server.DAILY_PATH, server.WORK_PATH, server.BLOCKS_PATH)))
+import queue  # noqa: E402
+stuck = queue.Queue(maxsize=20)  # a closed tab behind the Umbrel proxy: connected, but never reads
+server.subscribers.add(stuck)
+for _ in range(25):
+    server.broadcast("state", {"n": 1})
+check("a viewer that stops reading is dropped, not queued for forever", stuck not in server.subscribers and stuck.qsize() == 20)
 if platform.system() == "Linux":
     check("memory release (malloc_trim) available", P.malloc_trim is not None and server.malloc_trim is not None)
 

@@ -174,7 +174,9 @@ def broadcast(event, data):
         try:
             q.put_nowait(msg)
         except queue.Full:
-            pass
+            # a viewer that stopped reading (a closed tab or a sleeping phone, while the Umbrel proxy keeps the
+            # connection open): stop queueing for it; its connection closes when the write timeout hits
+            subscribers.discard(q)
 
 
 # ---------------------------------------------------------------- log tailing
@@ -1553,11 +1555,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.send_header("Connection", "keep-alive")
             self.end_headers()
-            q = queue.Queue(maxsize=200)
+            # 20 updates (~40 s of state) is plenty for a reader that keeps up; one that doesn't gets dropped in
+            # broadcast(), and a write blocked for 30 s ends the connection (each stuck one held a thread and
+            # ~20 MB of queued updates: a closed tab behind the Umbrel proxy otherwise stays open forever)
+            q = queue.Queue(maxsize=20)
             subscribers.add(q)
+            self.connection.settimeout(30)
             try:
                 q.put_nowait("event: state\ndata: %s\n\n" % json.dumps(snapshot()))
-                while True:
+                while q in subscribers or not q.empty():
                     try:
                         msg = q.get(timeout=15)
                     except queue.Empty:

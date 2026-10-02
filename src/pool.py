@@ -425,7 +425,7 @@ class Worker:
         _, job_id, en2_hex, ntime_hex, nonce_hex = params[:5]
         job = pool.jobs.get(job_id)
         if job is None:
-            self.reject("stale", 21, "Job not found")
+            self.reject("old-job", 21, "Job not found")  # from before the last two blocks, or before a restart
         try:
             en2 = bytes.fromhex(en2_hex)
             ntime, nonce = int(ntime_hex, 16), int(nonce_hex, 16)
@@ -459,7 +459,7 @@ class Worker:
             self.reject("low-diff", 23, "Low difficulty share")
         job.seen.add(key)  # only shares that pass the difficulty check: junk shares can't grow this set
         if job.prev_hex != pool.tip and not is_block:  # a block's verdict is the node's, logged by found_block
-            self.reject("stale", 21, "Stale share")
+            self.reject("stale", 21, "Stale share")  # work on the block just found by someone else: worthless
 
         now = time.time()
         self.accepted += 1
@@ -541,6 +541,8 @@ class Pool:
         self.rpc = RPC(cfg["rpc_url"], cfg["rpc_cookie"], cfg["rpc_user"], cfg["rpc_pass"])
         self.executor = ThreadPoolExecutor(4)
         self.submit_executor = ThreadPoolExecutor(1)  # found blocks never queue behind other RPCs
+        self.longpoll_executor = ThreadPoolExecutor(1)  # the long-poll waits for minutes; keep it off the others
+        self.longpoll_waiting = False
         self.tag = cfg["coinbase_tag"].encode()[:40]
         self.jobs = collections.OrderedDict()
         self.tx_cache = {}  # wtxid -> raw transaction, shared by the jobs (only the latest template's are kept here)
@@ -634,10 +636,15 @@ class Pool:
 
     # -- work
 
-    async def update_template(self, clean=False):
+    async def update_template(self, clean=False, tpl=None, new_tip=None, source=None):
+        """A new job from a fresh template, or from tpl (a long-poll reply the node already built). new_tip: the
+        block that prompted this; if another path already made its job meanwhile, there's nothing to do."""
         async with self.template_lock:
+            if (tpl is not None and tpl["previousblockhash"] == self.tip) or (new_tip and new_tip == self.tip):
+                return  # the other block watcher got there first
             t0 = time.time()
-            tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
+            if tpl is None:
+                tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
             node_tpl = tpl
             new_block = tpl["previousblockhash"] != self.tip
             mode, report, filtered = self.policy_cfg["mode"], None, False
@@ -663,7 +670,8 @@ class Pool:
                 self.last_switch = {"height": job.height, "ms": ms, "at": time.time(), "workers": len(workers)}
                 if workers:  # not the first job after a start
                     self.build_times.append(ms)
-                log.info("new network block %d (%s), now mining %d", job.height - 1, job.prev_hex, job.height)
+                log.info("new network block %d (%s), now mining %d%s", job.height - 1, job.prev_hex, job.height,
+                         " (spotted by the %s)" % source if source else "")
             log.info("%s job %s for block %d: %.8f BTC, %d txs, %s bytes, fees %.4f BTC (sent to %d workers in %d ms)",
                      "new-block" if new_block else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
                      "{:,}".format(sum(len(t) for t in job.tx_data)), job.fees / 1e8, len(workers), ms)
@@ -766,14 +774,45 @@ class Pool:
     # -- loops
 
     async def watch_blocks(self):
+        """The backstop: ask for the best block every 100 ms (the long-poll below is usually first)."""
         while True:
             try:
-                if await self.call("getbestblockhash", timeout=5) != self.tip:
-                    await self.update_template(clean=True)
+                best = await self.call("getbestblockhash", timeout=5)
+                if best != self.tip and self.longpoll_waiting:
+                    # the long-poll brings this block's template ~50 ms sooner than fetching one here (measured:
+                    # 63 vs 114 ms), so give it a moment instead of grabbing the lock and making it wait
+                    for _ in range(30):
+                        await asyncio.sleep(0.01)
+                        if self.tip == best:
+                            break
+                if best != self.tip:
+                    await self.update_template(clean=True, new_tip=best, source="block poll")
             except Exception as e:
                 log.warning("block watch: %s", e)
                 await asyncio.sleep(2)
             await asyncio.sleep(self.cfg["block_poll_ms"] / 1000)
+
+    async def longpoll_blocks(self):
+        """getblocktemplate long-polling: the node answers the moment its tip changes, with the new block's
+        template already built, so new work doesn't wait for the next block poll (50 ms on average)."""
+        loop, lpid = asyncio.get_running_loop(), None
+        while True:
+            req = {"rules": ["segwit"], "longpollid": lpid} if lpid else {"rules": ["segwit"]}
+            t0 = time.time()
+            self.longpoll_waiting = bool(lpid)  # a real wait is outstanding (the first call returns at once)
+            try:
+                tpl = await loop.run_in_executor(self.longpoll_executor,
+                                                 lambda: self.rpc.call("getblocktemplate", req, timeout=900))
+            except Exception as e:
+                self.longpoll_waiting = False
+                if time.time() - t0 < 20:  # a real failure; a long wait cut off by the node's HTTP timeout is not
+                    log.warning("block long-poll: %s", e)
+                    lpid = None
+                    await asyncio.sleep(5)
+                continue
+            lpid = tpl.get("longpollid")
+            if tpl["previousblockhash"] != self.tip:  # otherwise it only says the mempool changed
+                await self.update_template(clean=True, tpl=tpl, source="long-poll")
 
     def stall_guard_s(self):
         return self.state["settings"].get("stall_guard_s", self.cfg["stall_guard_s"])
@@ -1260,7 +1299,7 @@ class Pool:
         self.servers = [await asyncio.start_server(self.serve_stratum, "0.0.0.0", self.cfg["stratum_port"], limit=1 << 16),
                         await asyncio.start_server(self.serve_api, "0.0.0.0", self.cfg["api_port"])]
         loop = asyncio.get_running_loop()
-        self.tasks = [loop.create_task(c) for c in (self.watch_blocks(), self.refresh_templates(), self.housekeeping(),
+        self.tasks = [loop.create_task(c) for c in (self.watch_blocks(), self.longpoll_blocks(), self.refresh_templates(), self.housekeeping(),
                                                      self.stall_guard_loop())]
         log.info("stratum on :%d, api on :%d, height %d, pays %s by default%s",
                  self.cfg["stratum_port"], self.cfg["api_port"], self.job.height, self.cfg["default_address"],
