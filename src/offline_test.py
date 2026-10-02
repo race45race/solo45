@@ -314,6 +314,10 @@ server.track_error_rate("test", r2, 1180.0)  # 60 more errors in 3 minutes
 server.track_error_rate("test", r3, 1200.0)  # the counter went down: the miner restarted
 check("tuning report: chip errors per minute", r1["errors_per_min"] is None and r2["errors_per_min"] == 20.0
       and r3["errors_per_min"] is None, "(%s %s %s)" % (r1.get("errors_per_min"), r2.get("errors_per_min"), r3.get("errors_per_min")))
+server.STRATUM_PORT = "3337"  # the official Umbrel app's port
+check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
+      and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
+      and server.pool_name("solo.ckpool.org", 3337) == "solo.ckpool.org")
 if platform.system() == "Linux":
     check("memory release (malloc_trim) available", P.malloc_trim is not None and server.malloc_trim is not None)
 

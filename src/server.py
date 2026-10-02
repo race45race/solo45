@@ -540,9 +540,14 @@ def as_num(v):
     return None
 
 
+STRATUM_PORT = os.environ.get("SOLO45_STRATUM_PORT") or "3333"  # the port miners use for Solo45 (the app sets it)
+
+
 def pool_name(host, port):
     host = (host or "").replace("stratum+tcp://", "").strip("/")
     private = host.startswith(("192.168.", "10.", "172.")) or host.endswith(".local")
+    if private and str(port) == STRATUM_PORT:
+        return "Solo45"
     if private and str(port) in CFG["pools"]:
         return CFG["pools"][str(port)]
     return host or "?"

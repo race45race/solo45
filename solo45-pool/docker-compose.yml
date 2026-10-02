@@ -42,6 +42,7 @@ services:
       SOLO45_POOL_LOG: /data/pool/pool.log
       SOLO45_API_BASE: http://solo45-pool_pool_1:3380
       SOLO45_API_TOKEN: ${APP_SOLO45_POOL_API_TOKEN}
+      SOLO45_STRATUM_PORT: "3333"  # the port miners use, so the dashboard knows which miners are on Solo45
       SOLO45_PROXY_HOST: solo45-pool_app_proxy_1  # changes and live data only through the Umbrel login
       BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}  # new blocks, no log reading
       BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
