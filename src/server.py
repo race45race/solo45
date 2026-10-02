@@ -575,6 +575,15 @@ def poll_bitaxe(ip):
         "block_found": bool(i.get("blockFound")),
         "version": i.get("version"),
         "wifi_rssi": i.get("wifiRSSI"),
+        # for the tuning report (read from this same poll: nothing extra is asked of the miner)
+        "asic": i.get("ASICModel"),
+        "board": i.get("boardVersion"),
+        "frequency": i.get("frequency"),
+        "core_mv": i.get("coreVoltage"),
+        "max_power": i.get("maxPower"),
+        "err_pct": i.get("errorPercentage"),
+        "asic_errors": sum(a.get("errorCount", 0) for a in (i.get("hashrateMonitor") or {}).get("asics") or []
+                           ) if i.get("hashrateMonitor") else None,
     }
 
 
@@ -700,12 +709,32 @@ def track_daily_best(ip, result, t):
     session_best[ip] = best  # also resets our baseline when the miner restarts
 
 
+error_counts = {}  # ip -> deque of (time, the ASIC's running error count), last 15 minutes
+
+
+def track_error_rate(ip, result, t):
+    """Chip errors per minute over the last ~15 minutes, from the counter the Bitaxe reports (lock held). The
+    counter runs since the miner started, so its total says little; how fast it climbs is what matters."""
+    count = result.get("asic_errors")
+    if count is None:
+        return
+    hist = error_counts.setdefault(ip, collections.deque())
+    if hist and count < hist[-1][1]:
+        hist.clear()  # the miner restarted
+    hist.append((t, count))
+    while hist and hist[0][0] < t - 900:
+        hist.popleft()
+    span = hist[-1][0] - hist[0][0]
+    result["errors_per_min"] = round((hist[-1][1] - hist[0][1]) / span * 60, 1) if span >= 120 else None
+
+
 def record(ip, result, err):
     t = time.time()
     with lock:
         m = S["miners"].setdefault(ip, {"ip": ip, "fails": 0})
         if result:
             track_daily_best(ip, result, t)
+            track_error_rate(ip, result, t)
             m.update(result)
             m["fails"], m["ok"], m["last_ok"], m["error"] = 0, True, t, None
             if result.get("netdiff"):

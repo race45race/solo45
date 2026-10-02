@@ -320,6 +320,21 @@ body.privacy .sensitive { filter: blur(6px); }
     </div>
   </section>
 
+  <section class="card" style="margin-bottom:12px;display:none" id="tuneCard">
+    <h2>Tuning report <span class="muted">suggestions only: nothing here changes your miners</span></h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th class="first">Miner</th><th class="r">Setting</th><th class="r hide-sm">J/TH</th><th class="r">Chip / VR</th>
+          <th class="r" title="How fast the chip's own error counter climbs (last 15 minutes). The total since restart says little; a fast climb means the chip is struggling at this setting.">Chip errors</th>
+          <th class="r" title="Work Solo45 counted from this miner's shares over the last hour, vs what it reports. Swings about ±10% with share luck.">Pool sees</th><th>Suggestion</th>
+        </tr></thead>
+        <tbody id="tuneRows"></tbody>
+      </table>
+    </div>
+    <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. Braiins OS miners tune themselves.</div>
+  </section>
+
   <section class="card" style="margin-bottom:12px">
     <h2>Solo45 settings</h2>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
@@ -688,6 +703,7 @@ function render(s) {
   renderAlerts(s);
   renderBlock(s);
   renderMiners(s);
+  renderTuning(s);
   renderBlocks(s);
   renderSolo(s);
   renderPolicy(s);
@@ -886,6 +902,39 @@ function renderMiners(s) {
 let soloSig = "";
 let payForceBusy = false;  // while the payout switch saves, live updates don't flip it back
 const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
+// ---- tuning report: read-only suggestions from what each Bitaxe already reports (no extra requests)
+const TUNE_LIMITS = {BM1368: {vr: 90, chip: 67}};  // the Hex's power stages run hotter by design
+const tuneLimits = m => TUNE_LIMITS[m.asic] || {vr: 80, chip: 67};
+function tuneAdvice(m, seen) {
+  const L = tuneLimits(m), vr = m.temp2, chip = m.temp, err = m.errors_per_min, out = [];
+  if (vr != null && vr >= L.vr - 3) out.push(["warn", `Power stage ${Math.round(vr)}°C, near its ${L.vr}°C limit: lower the frequency 25 MHz, or raise the minimum fan speed`]);
+  if (chip != null && chip >= L.chip - 2 && (m.fan || 0) >= 95) out.push(["warn", "Chip near its limit with the fan maxed: lower the frequency 25 MHz"]);
+  if (err != null && err >= 30) out.push(["warn", `${err} chip errors a minute: try +25 mV, or −25 MHz`]);
+  if (seen != null && seen < 0.85 && (m.uptime || 0) > 7200) out.push(["warn", "The pool counts under 85% of the expected work for the last hour: try +25 mV, or −25 MHz"]);
+  if (!out.length && err != null && err < 5 && vr != null && vr < L.vr - 15 && m.asic === "BM1370" && m.core_mv >= 1200 && m.frequency <= 575)
+    out.push(["ok", "Cool and clean at this speed: you could try −25 mV to save power (then watch errors and pool %)"]);
+  return out.length ? out : [["ok", "Looks well tuned"]];
+}
+let tuneHtml = "";
+function renderTuning(s) {
+  const bx = (s.miners || []).filter(m => m.kind === "bitaxe" && m.status !== "offline")
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  $("tuneCard").style.display = bx.length ? "" : "none";
+  const html = bx.map(m => {
+    const ref = m.ths_long || m.ths, seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
+    const L = tuneLimits(m), hot = (v, lim) => v != null && v >= lim - 3 ? "hot" : "";
+    const advice = tuneAdvice(m, seen).map(([lvl, t]) => `<div class="${lvl === "warn" ? "hot" : "muted"}">${esc(t)}</div>`).join("");
+    return `<tr><td class="first"><div class="mname">${esc(m.name)}</div><div class="msub">${esc(m.asic || "")}</div></td>
+      <td class="r num">${m.frequency != null ? `${m.frequency} MHz` : "—"}<div class="msub">${m.core_mv != null ? m.core_mv + " mV" : ""}</div></td>
+      <td class="r num hide-sm">${m.power && m.ths ? (m.power / m.ths).toFixed(1) : "—"}</td>
+      <td class="r num"><span class="${hot(m.temp, L.chip)}">${m.temp != null ? Math.round(m.temp) + "°" : "—"}</span> / <span class="${hot(m.temp2, L.vr)}">${m.temp2 != null ? Math.round(m.temp2) + "°" : "—"}</span></td>
+      <td class="r num">${m.errors_per_min != null ? m.errors_per_min + "/min" : '<span class="faint" title="Needs a few minutes of readings (or this firmware has no error counter)">—</span>'}</td>
+      <td class="r num">${seen != null ? Math.round(seen * 100) + "%" : "—"}</td>
+      <td style="white-space:normal;min-width:220px">${advice}</td></tr>`;
+  }).join("");
+  if (html !== tuneHtml) { tuneHtml = html; $("tuneRows").innerHTML = html; }  // only touch the page when something changed
+}
+
 function renderSolo(s) {
   const so = s.solo45 || {};
   $("setupCard").style.display = so.needs_setup ? "" : "none";

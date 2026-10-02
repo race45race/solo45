@@ -308,6 +308,12 @@ server.subscribers.add(stuck)
 for _ in range(25):
     server.broadcast("state", {"n": 1})
 check("a viewer that stops reading is dropped, not queued for forever", stuck not in server.subscribers and stuck.qsize() == 20)
+r1, r2, r3 = {"asic_errors": 100}, {"asic_errors": 160}, {"asic_errors": 5}
+server.track_error_rate("test", r1, 1000.0)
+server.track_error_rate("test", r2, 1180.0)  # 60 more errors in 3 minutes
+server.track_error_rate("test", r3, 1200.0)  # the counter went down: the miner restarted
+check("tuning report: chip errors per minute", r1["errors_per_min"] is None and r2["errors_per_min"] == 20.0
+      and r3["errors_per_min"] is None, "(%s %s %s)" % (r1.get("errors_per_min"), r2.get("errors_per_min"), r3.get("errors_per_min")))
 if platform.system() == "Linux":
     check("memory release (malloc_trim) available", P.malloc_trim is not None and server.malloc_trim is not None)
 
