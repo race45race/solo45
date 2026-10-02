@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.21"
+version: "0.1.22"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Solo45 now shows its own speed: under Latest block, how fast it typically sends new work after a block and how long your node takes to check each job (handy numbers if you run it on a Raspberry Pi). On slower machines those checks of job refreshes space out automatically; every new block's work is still checked. Running Solo45 outside Umbrel? The pool's API now only answers the machine it runs on unless you set a token. Every change is now tested on x86 and ARM, and the app page has screenshots.
+  Faster block switching: Solo45 now hears about a new block the instant your node accepts it (long-polling), instead of checking every 100 ms, so new work goes out about 50 ms sooner on average. The dashboard no longer slowly grows in memory: live-update connections left behind by closed browser tabs or a sleeping phone are now closed. On a phone, the Miners table shows each miner's shares and the block it's mining under Uptime. Rejected shares are labelled more clearly ("stale" is work on a block someone else just found).
 
 developer: race45race
 website: https://github.com/race45race/solo45
