@@ -645,21 +645,84 @@ def poll_braiins(ip):
     }
 
 
+thor_cache = {}  # ip -> device info, uptime and recent hashrate samples (info and uptime are read once a minute)
+
+
+def poll_thor(ip):
+    """Hammer Miner Thor (Thor OS, e.g. the Thor X1 with a BM1373): read-only, like the Bitaxe poll."""
+    s = http_json("http://%s/v2/miner/status" % ip)["data"]
+    t = time.time()
+    c = thor_cache.setdefault(ip, {"at": 0, "samples": collections.deque(maxlen=200)})
+    if t - c["at"] > 60:
+        c["info"] = http_json("http://%s/v2/device/info" % ip).get("data") or {}
+        c["dev"] = http_json("http://%s/v2/device/status" % ip).get("data") or {}
+        c["at"] = t
+    info, dev = c["info"], c["dev"]
+    hr = (s.get("current_hashrate") or 0) / 1e12
+    c["samples"].append((t, hr))
+
+    def avg(seconds):
+        xs = [h for at, h in c["samples"] if t - at <= seconds]
+        return sum(xs) / len(xs) if xs else hr
+
+    chips = s.get("chips") or []
+    chip_temps = [ch["temperature"] for ch in chips if ch.get("temperature") is not None]
+    user = s.get("pool_worker") or ""
+    up = dev.get("uptime_seconds")
+    return {
+        "kind": "thor",
+        "name": user.split(".", 1)[1] if "." in user else ip,
+        "model": "Hammer " + str(info.get("device_model") or "Thor").title(),
+        "ths_now": hr,
+        "ths": avg(60),
+        "ths_long": avg(600),
+        "expected_ths": None,
+        "temp": max(chip_temps) if chip_temps else s.get("temp_board"),
+        "temp2": s.get("temp_vcore"),
+        "power": s.get("power_consumption"),
+        "fan": s.get("fan_target_speed"),
+        "best": as_num(s.get("bestDiff")),
+        "best_session": as_num(s.get("bestSessionDiff")),
+        "accepted": s.get("shares_accepted"),
+        "rejected": s.get("shares_rejected"),
+        "hw_errors": sum(ch.get("hardware_errors") or 0 for ch in chips) if chips else None,
+        "height": None,
+        "uptime": up + int(t - c["at"]) if up is not None else None,
+        "pool": pool_name(s.get("pool_url"), s.get("pool_port")),
+        "on_fallback": bool(s.get("isUsingFallbackStratum")),
+        "version": info.get("firmware_version"),
+        "wifi_rssi": dev.get("wifi_rssi"),
+        "asic": info.get("chip_type"),
+        "frequency": s.get("frequency"),
+        "core_mv": (s.get("coreVoltage") or 0) * 10 or None,
+    }
+
+
+POLLERS = {"bitaxe": poll_bitaxe, "braiins": poll_braiins, "thor": poll_thor}
+
+
+def unreachable(e):
+    """The miner didn't answer at all (offline), as opposed to answering in another miner's language."""
+    r = getattr(e, "reason", e)
+    return isinstance(r, TimeoutError) or getattr(r, "errno", None) in (101, 113)  # network / host unreachable
+
+
 kind_cache = {}
 
 
 def poll_one(ip):
-    order = [kind_cache.get(ip)] if ip in kind_cache else ["bitaxe", "braiins"]
-    if len(order) == 1:
-        order.append("braiins" if order[0] == "bitaxe" else "bitaxe")
+    cached = kind_cache.get(ip)
+    order = ([cached] if cached else []) + [k for k in POLLERS if k != cached]
     last_err = None
     for kind in order:
         try:
-            r = poll_bitaxe(ip) if kind == "bitaxe" else poll_braiins(ip)
+            r = POLLERS[kind](ip)
             kind_cache[ip] = kind
             return r
         except Exception as e:
             last_err = e
+            if unreachable(e):  # an offline miner: trying the other kinds would only hold up the poll
+                break
     raise last_err
 
 
@@ -705,7 +768,7 @@ def track_daily_best(ip, result, t):
     dt = min(t - last_polled.get(ip, t), 15)  # a gap (miner offline, dashboard restart) counts as 15 s at most
     d["hashes"] += (result.get("ths") or 0) * 1e12 * dt
     last_polled[ip] = t
-    best = result.get("best_session") if result.get("kind") == "bitaxe" else result.get("best")
+    best = result.get("best_session") if result.get("kind") in ("bitaxe", "thor") else result.get("best")
     if best is None:
         return
     prev = session_best.get(ip)
@@ -824,7 +887,7 @@ def miner_status(m, tip):
         return "offline", "Not responding"
     if m.get("on_fallback"):
         return "warn", "On fallback pool"
-    if m.get("temp") and ((m["kind"] == "bitaxe" and m["temp"] >= 70) or
+    if m.get("temp") and ((m["kind"] in ("bitaxe", "thor") and m["temp"] >= 70) or
                           (m["kind"] == "braiins" and m["temp"] >= 85)):
         return "warn", "Running hot"
     exp = m.get("expected_ths")

@@ -867,7 +867,7 @@ function renderMiners(s) {
       const off = m.status === "offline";
       const pct = m.expected_ths ? Math.min(100, (m.ths / m.expected_ths) * 100) : null;
       const jth = m.power && m.ths ? (m.power / m.ths).toFixed(1) : "—";
-      const hot = (m.kind === "bitaxe" && m.temp >= 65) || (m.kind === "braiins" && m.temp >= 80);
+      const hot = ((m.kind === "bitaxe" || m.kind === "thor") && m.temp >= 65) || (m.kind === "braiins" && m.temp >= 80);
       const temp = m.temp != null ? `<span class="${hot ? "hot" : ""}">${Math.round(m.temp)}°</span>` + (m.temp2 ? `<span class="faint"> / ${Math.round(m.temp2)}°</span>` : "") : "—";
       const best = m.best_session != null
         ? `${fmtDiff(m.best_session)} <span class="faint">/ ${fmtDiff(m.best)}</span>`

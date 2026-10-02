@@ -314,6 +314,40 @@ server.track_error_rate("test", r2, 1180.0)  # 60 more errors in 3 minutes
 server.track_error_rate("test", r3, 1200.0)  # the counter went down: the miner restarted
 check("tuning report: chip errors per minute", r1["errors_per_min"] is None and r2["errors_per_min"] == 20.0
       and r3["errors_per_min"] is None, "(%s %s %s)" % (r1.get("errors_per_min"), r2.get("errors_per_min"), r3.get("errors_per_min")))
+import urllib.error  # noqa: E402
+_real_http = server.http_json
+
+
+def _fake_http(url, timeout=3, headers=None):
+    if url.endswith("/v2/miner/status"):
+        return {"ok": True, "data": {"current_hashrate": 3.08e12, "temp_board": 48.1, "temp_vcore": 74.5,
+                                     "power_consumption": 33.0, "fan_target_speed": 76, "bestDiff": 1441558099,
+                                     "bestSessionDiff": 94421, "shares_accepted": 25, "shares_rejected": 0,
+                                     "pool_url": "192.168.1.5", "pool_port": 3333, "pool_worker": "bc1qtest.ThorX1",
+                                     "isUsingFallbackStratum": False, "frequency": 460, "coreVoltage": 101,
+                                     "chips": [{"temperature": 52.2, "hardware_errors": 7}]}}
+    if url.endswith("/v2/device/info"):
+        return {"ok": True, "data": {"device_model": "THOR X1", "chip_type": "BM1373", "firmware_version": "1.0.5"}}
+    if url.endswith("/v2/device/status"):
+        return {"ok": True, "data": {"uptime_seconds": 600, "wifi_rssi": -60}}
+    raise urllib.error.HTTPError(url, 404, "Not Found", None, None)  # not AxeOS
+
+
+def _no_cgminer(*a, **k):
+    raise ConnectionRefusedError()  # nothing listens on 4028
+
+
+_real_cgminer = server.cgminer
+server.http_json, server.cgminer = _fake_http, _no_cgminer
+server.kind_cache.pop("10.9.9.9", None)
+_t = server.poll_one("10.9.9.9")  # AxeOS 404, no Braiins API on 4028, then Thor OS answers
+server.http_json, server.cgminer = _real_http, _real_cgminer
+check("Hammer Thor X1 is read like a Bitaxe", _t["kind"] == "thor" and _t["name"] == "ThorX1"
+      and _t["model"] == "Hammer Thor X1" and abs(_t["ths"] - 3.08) < 1e-9 and _t["temp"] == 52.2
+      and _t["temp2"] == 74.5 and _t["power"] == 33.0 and _t["core_mv"] == 1010 and _t["hw_errors"] == 7
+      and _t["uptime"] >= 600 and server.kind_cache.get("10.9.9.9") == "thor", str({k: _t.get(k) for k in ("kind", "name", "model", "ths", "temp")}))
+check("an offline miner isn't asked in every miner language",
+      server.unreachable(urllib.error.URLError(TimeoutError())) and not server.unreachable(urllib.error.HTTPError("u", 404, "x", None, None)))
 server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
