@@ -273,6 +273,7 @@ class Worker:
         self.spk = None
         self.connected = time.time()
         self.last_share = 0
+        self.last_height = None  # the block its latest accepted share was for
         self.accepted = 0
         self.rejected = collections.Counter()
         self.best = 0.0
@@ -464,6 +465,7 @@ class Worker:
         now = time.time()
         self.accepted += 1
         self.last_share = now
+        self.last_height = job.height
         credit = self.share_credit(job.id, share_diff)
         self.vd_count += 1
         self.vd_work += credit
@@ -525,8 +527,8 @@ class Worker:
             "name": self.name, "ip": self.ip, "agent": self.agent, "address": self.address,
             "diff": self.diff, "switches_at_once": self.switches_at_once,
             "accepted": self.accepted, "rejected": dict(self.rejected),
-            "best": self.best, "last_share": self.last_share, "connected": self.connected,
-            "override": self.override(),
+            "best": self.best, "last_share": self.last_share, "last_height": self.last_height,
+            "connected": self.connected, "override": self.override(),
             "hashrate_5m": hashrate(self.shares, min(300, max(now - self.connected, 60)), now),
             "hashrate_1h": hashrate(self.shares, min(3600, max(now - self.connected, 60)), now),
         }

@@ -279,6 +279,7 @@ async def pool_tests():
     check("shares: low-difficulty ones not remembered, duplicates caught, block shares never stale",
           rejected == 50 and after_junk == 0 and accepted is True and duplicate and block_ok is True and len(calls) == 1,
           "(%d rejected, %d remembered, dup %s, block %s)" % (rejected, after_junk, duplicate, block_ok))
+    check("the pool remembers the block of a miner's latest share", w.snapshot(time.time())["last_height"] == job.height)
 
     # connection limits: over the per-address cap is closed at once; a quiet unauthorized connection times out
     pool.conns["10.0.0.9"] = pool.cfg["max_conns_per_ip"]
@@ -348,6 +349,13 @@ check("Hammer Thor X1 is read like a Bitaxe", _t["kind"] == "thor" and _t["name"
       and _t["uptime"] >= 600 and server.kind_cache.get("10.9.9.9") == "thor", str({k: _t.get(k) for k in ("kind", "name", "model", "ths", "temp")}))
 check("an offline miner isn't asked in every miner language",
       server.unreachable(urllib.error.URLError(TimeoutError())) and not server.unreachable(urllib.error.HTTPError("u", 404, "x", None, None)))
+_workers = server.S["solo45"].get("workers")
+server.S["solo45"]["workers"] = [{"name": "ThorX1", "connected": 0, "hashrate_1h": 3e12, "last_height": 969700}]
+_e1 = server.miner_extras({"name": "ThorX1", "height": None, "power": 33}, time.time())
+_e2 = server.miner_extras({"name": "ThorX1", "height": 969699, "power": 33}, time.time())
+server.S["solo45"]["workers"] = _workers
+check("a miner without its own block number shows the block of its latest share",
+      _e1.get("height") == 969700 and _e1.get("height_src") == "pool" and "height" not in _e2)
 server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"

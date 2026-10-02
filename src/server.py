@@ -934,16 +934,22 @@ def best_today():
 def miner_extras(m, now):
     """Electricity cost, 24 h uptime, temperature trend and pool-measured hashrate (lock held)."""
     rows = [r for r in S["temps"].get(m.get("name"), []) if r[0] >= now - 86400]
-    pool_ths = None
+    pool_ths = pool_height = None
     for w in S["solo45"].get("workers") or []:
-        if w.get("name") == m.get("name") and now - w.get("connected", now) > 1800:
-            pool_ths = w.get("hashrate_1h", 0) / 1e12  # only once it has been connected for a while
+        if w.get("name") == m.get("name"):
+            pool_height = w.get("last_height")
+            if now - w.get("connected", now) > 1800:
+                pool_ths = w.get("hashrate_1h", 0) / 1e12  # only once it has been connected for a while
+    # A miner that doesn't report its block (Thor OS, Braiins OS) shows the block of its latest share instead.
+    # Display only: the "Working on old block" warning still uses what the miner itself reports.
+    height = {"height": pool_height, "height_src": "pool"} if not m.get("height") and pool_height else {}
     step = max(1, len(rows) // 48)
     return {
         "cost_day": (m.get("power") or 0) / 1000 * 24 * CFG["kwh_price"],
         "uptime_24h": sum(r[3] for r in rows) / len(rows) if len(rows) >= 6 else None,
         "temp_trend": [[r[1], r[2]] for r in rows[::step]],
         "pool_ths": pool_ths,
+        **height,
     }
 
 

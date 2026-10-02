@@ -872,7 +872,8 @@ function renderMiners(s) {
       const best = m.best_session != null
         ? `${fmtDiff(m.best_session)} <span class="faint">/ ${fmtDiff(m.best)}</span>`
         : fmtDiff(m.best);
-      const blk = m.height ? (tip && m.height > tip.height ? `<span style="color:var(--ok)">✓</span> <span class="num">${m.height}</span>` : `<span class="hot num">${m.height}</span>`) : `<span class="faint">—</span>`;
+      const blk0 = m.height ? (tip && m.height > tip.height ? `<span style="color:var(--ok)">✓</span> <span class="num">${m.height}</span>` : `<span class="hot num">${m.height}</span>`) : `<span class="faint">—</span>`;
+      const blk = m.height_src === "pool" ? `<span title="The block of its latest share, as Solo45 saw it (this miner doesn't report the block it's on)">${blk0}</span>` : blk0;
       const rej = m.rejected ? `<span class="faint"> / ${m.rejected}</span>` : "";
       const ref = m.ths_long || m.ths;  // the Hexes' older firmware has no 10-minute average
       const seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
