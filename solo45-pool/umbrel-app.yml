@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.23"
+version: "0.1.24"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,8 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  New Tuning report under the Miners table: each Bitaxe's frequency and voltage, efficiency (J/TH), chip and power-stage temperatures against their limits, how fast the chip's error counter is climbing, and how much of its work the pool actually counts, with a plain suggestion for each (for example, too hot: lower the frequency 25 MHz; cool and clean: try 25 mV less to save power). It only reads what the dashboard already collects, so nothing extra is asked of your miners, and it never changes their settings.
+  Groundwork for the official Umbrel App Store version of Solo45 (it has to use stratum port 3337, because 3333 is taken there): the dashboard now learns your miners' stratum port from the app instead of assuming 3333. Nothing changes for this app: keep your miners on port 3333.
+
 
 developer: race45race
 website: https://github.com/race45race/solo45
