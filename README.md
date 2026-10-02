@@ -83,7 +83,7 @@ Solo45 is a normal Docker app. You need a Bitcoin Core (or Knots) node with RPC 
 ```yaml
 services:
   pool:
-    image: ghcr.io/race45race/solo45:v0.1.24
+    image: ghcr.io/race45race/solo45:v0.1.25
     command: ["python", "/app/pool.py"]
     restart: on-failure
     stop_grace_period: 30s                 # lets a found block reach the node before the pool stops
@@ -99,7 +99,7 @@ services:
       BITCOIN_RPC_PASS: your-rpc-password
 
   dashboard:
-    image: ghcr.io/race45race/solo45:v0.1.24
+    image: ghcr.io/race45race/solo45:v0.1.25
     command: ["python", "/app/server.py"]
     restart: on-failure
     ports:
