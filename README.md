@@ -71,8 +71,8 @@ Handy extras: **Screenshot mode** (footer) hides your payout address, IP address
 
 ## How it works
 
-- `src/pool.py` is the Stratum v1 pool. It asks your node for block templates over RPC, watches for new blocks every 100 ms, refreshes jobs with new transactions every 30 seconds (adjustable), has the node check each job, and submits a found block straight away.
-- `src/server.py` is the dashboard. It polls the miners' own local APIs (AxeOS over HTTP, Braiins OS over the CGMiner API on port 4028), hears about new blocks from the node's ZMQ feed, and serves one page with live updates.
+- `src/pool.py` is the Stratum v1 pool. It asks your node for block templates over RPC, hears about new blocks through the node's long-poll (with a check every 100 ms as a backup), refreshes jobs with new transactions every 30 seconds (adjustable), has the node check each job, and submits a found block straight away.
+- `src/server.py` is the dashboard. It polls the miners' own local APIs (AxeOS over HTTP, Hammer Thor OS over HTTP, Braiins OS over the CGMiner API on port 4028), hears about new blocks from the node's ZMQ feed, and serves one page with live updates.
 - `src/policy.py` is the template policy, `src/stallguard.py` the stall guard.
 - The pool and dashboard use only the Python standard library; the optional AI assistant uses the `anthropic` library.
 
@@ -140,13 +140,13 @@ Both programs also run straight from the source with Python 3 (tested with 3.13)
 
 **Does it work with Bitcoin Knots?** It only uses standard RPC and ZMQ, so it should, including through Umbrel's alternative node apps. So far it has been tested with Bitcoin Core 31.1.
 
-**Raspberry Pi?** The images are built for arm64 and amd64, and every release's tests also run on real ARM hardware. The pool settles at about 80 MB of memory and checks a full block template in about 20 ms on the author's x86 Umbrel. Raspberry Pi testers are very welcome.
+**Raspberry Pi?** The images are built for arm64 and amd64, and every release's tests also run on real ARM hardware. The pool settles at about 60 MB of memory (about 100 MB for the whole app), and on the author's x86 Umbrel it sends new work about 30 ms after a new block. Raspberry Pi testers are very welcome.
 
 **What does the template policy cost me?** Only the fees of the transactions you leave out. The dashboard shows it per block and for the last 24 hours, 7 days and 30 days. Use Watch mode to see the cost of a rule before you turn it on.
 
 ## Status
 
-Solo45 is young (v0.1.x) but in daily use on its author's Umbrel, with 12 miners: ten Bitaxes, an Antminer S21 and an S19K Pro. Feedback, bug reports and testers are welcome: please [open an issue](https://github.com/race45race/solo45/issues).
+Solo45 is young (v0.1.x) but in daily use on its author's Umbrel, with 13 miners: ten Bitaxes, a Hammer Thor X1, an Antminer S21 and an S19K Pro. Feedback, bug reports and testers are welcome: please [open an issue](https://github.com/race45race/solo45/issues).
 
 Solo mining is a lottery. Even with a few hundred TH/s, the expected time to find a block is decades; any single day is a long shot. Mine because you enjoy it and to help decentralize Bitcoin, not as an investment.
 
