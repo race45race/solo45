@@ -645,6 +645,67 @@ def poll_braiins(ip):
     }
 
 
+def active_pool(pools, guess=False):
+    """The pool a CGMiner-style miner is mining on. MARA firmware never sets "Stratum Active", so with
+    guess=True the first pool that's up, in priority order, stands in for it."""
+    act = next((p for p in pools if p.get("Stratum Active")), None)
+    if act or not guess:
+        return act
+    alive = sorted((p for p in pools if p.get("Status") == "Alive"), key=lambda p: p.get("Priority", 0))
+    return alive[0] if alive else None
+
+
+def hottest(stats, prefix):
+    """The highest reading in MARA's "min-max" temperature strings (temp_chip1 = "49-58", ...)."""
+    vals = [int(x) for k, v in stats.items() if re.fullmatch(prefix + r"\d", k)
+            for x in re.findall(r"\d+", str(v)) if int(x) > 0]
+    return max(vals) if vals else None
+
+
+def poll_mara(ip):
+    """MARA firmware (MaraFW, e.g. on a MARA control board): CGMiner-style API with hashrates in GH/s
+    and no power reading. Read-only, like the others."""
+    summary = cgminer(ip, "summary")
+    if "kaonsu" not in str((summary.get("STATUS") or [{}])[0].get("Description", "")):
+        raise ValueError("not MARA firmware")
+    summ = summary["SUMMARY"][0]
+    stats = cgminer(ip, "stats").get("STATS", [])
+    info, st = (stats + [{}, {}])[0], (stats + [{}, {}])[1]
+    pools = cgminer(ip, "pools").get("POOLS", [])
+    active = active_pool(pools, guess=True)
+    lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
+    host, port, user = "", "", ""
+    if active:
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        user = active.get("User", "")
+    return {
+        "kind": "mara",
+        "name": user.split(".", 1)[1] if "." in user else ip,
+        "model": "MARA · " + str(info.get("Model") or "firmware"),
+        "ths_now": (summ.get("GHS 5s") or 0) / 1000,
+        "ths": (summ.get("GHS 5s") or 0) / 1000,
+        "ths_long": (summ.get("GHS 30m") or summ.get("GHS av") or 0) / 1000,
+        "expected_ths": None,
+        "temp": hottest(st, "temp_chip"),
+        "temp2": hottest(st, "temp_pcb"),
+        "power": None,  # MARA's API doesn't report it (only its web page does)
+        "fan": None,
+        "best": as_num(summ.get("Best Share")),
+        "best_session": None,
+        "accepted": summ.get("Accepted"),
+        "rejected": summ.get("Rejected"),
+        "hw_errors": summ.get("Hardware Errors"),
+        "height": None,
+        "uptime": summ.get("Elapsed"),
+        "pool": pool_name(host, port),
+        "on_fallback": bool(active) and active.get("Priority", 0) != lowest_prio,
+        "version": info.get("BMMiner"),
+        "pools": [{"url": p.get("URL"), "status": p.get("Status"), "active": p is active,
+                   "priority": p.get("Priority")} for p in pools],
+    }
+
+
 thor_cache = {}  # ip -> device info, uptime and recent hashrate samples (info and uptime are read once a minute)
 
 
@@ -698,7 +759,7 @@ def poll_thor(ip):
     }
 
 
-POLLERS = {"bitaxe": poll_bitaxe, "braiins": poll_braiins, "thor": poll_thor}
+POLLERS = {"bitaxe": poll_bitaxe, "mara": poll_mara, "braiins": poll_braiins, "thor": poll_thor}  # MARA before Braiins: its API looks alike
 
 
 def unreachable(e):
@@ -708,6 +769,7 @@ def unreachable(e):
 
 
 kind_cache = {}
+STALE_MINER_S = 86400  # a miner that hasn't answered for this long, and isn't connected, leaves the table
 
 
 def poll_one(ip):
@@ -729,6 +791,11 @@ def poll_one(ip):
 def miner_ips():
     with lock:
         solo_ips = {w["ip"] for w in S["solo45"].get("workers") or []}
+        now = time.time()
+        for ip in [ip for ip, m in S["miners"].items() if ip not in solo_ips and ip not in S["ck_workers"]
+                   and ip not in CFG["miners"] and now - (m.get("last_ok") or m.get("first_seen") or now) > STALE_MINER_S]:
+            del S["miners"][ip]  # gone for a day and not connected: e.g. a miner's old address
+            kind_cache.pop(ip, None)
         ips = set(S["ck_workers"]) | set(CFG["miners"]) | set(S["miners"]) | solo_ips
     return sorted(ips - set(CFG["ignore"]), key=lambda s: tuple(int(x) for x in s.split(".")))
 
@@ -799,7 +866,7 @@ def track_error_rate(ip, result, t):
 def record(ip, result, err):
     t = time.time()
     with lock:
-        m = S["miners"].setdefault(ip, {"ip": ip, "fails": 0})
+        m = S["miners"].setdefault(ip, {"ip": ip, "fails": 0, "first_seen": t})
         if result:
             track_daily_best(ip, result, t)
             track_error_rate(ip, result, t)
@@ -860,10 +927,10 @@ def braiins_work_loop():
     """
     last = {}
     while True:
-        for ip in [ip for ip, k in list(kind_cache.items()) if k == "braiins" and ip not in CFG["ignore"]]:
+        for ip, kind in [(ip, k) for ip, k in list(kind_cache.items()) if k in ("braiins", "mara") and ip not in CFG["ignore"]]:
             try:
                 pools = cgminer(ip, "pools", timeout=1).get("POOLS", [])
-                active = next((p for p in pools if p.get("Stratum Active")), None)
+                active = active_pool(pools, guess=kind == "mara")
                 g = (active.get("URL"), active.get("Getworks")) if active else None
             except Exception:
                 continue
@@ -888,7 +955,7 @@ def miner_status(m, tip):
     if m.get("on_fallback"):
         return "warn", "On fallback pool"
     if m.get("temp") and ((m["kind"] in ("bitaxe", "thor") and m["temp"] >= 70) or
-                          (m["kind"] == "braiins" and m["temp"] >= 85)):
+                          (m["kind"] in ("braiins", "mara") and m["temp"] >= 85)):
         return "warn", "Running hot"
     exp = m.get("expected_ths")
     if exp and m.get("ths") is not None and m["ths"] < 0.6 * exp and (m.get("uptime") or 0) > 300:

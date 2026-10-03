@@ -349,6 +349,39 @@ check("Hammer Thor X1 is read like a Bitaxe", _t["kind"] == "thor" and _t["name"
       and _t["uptime"] >= 600 and server.kind_cache.get("10.9.9.9") == "thor", str({k: _t.get(k) for k in ("kind", "name", "model", "ths", "temp")}))
 check("an offline miner isn't asked in every miner language",
       server.unreachable(urllib.error.URLError(TimeoutError())) and not server.unreachable(urllib.error.HTTPError("u", 404, "x", None, None)))
+_mara = {
+    "summary": {"STATUS": [{"Description": "kaonsu-old-api 1.0.0"}],
+                "SUMMARY": [{"GHS 5s": 100055.5, "GHS 30m": 100077.5, "Accepted": 8, "Rejected": 0, "Elapsed": 1649,
+                             "Best Share": 3290000, "Hardware Errors": 0}]},
+    "stats": {"STATS": [{"BMMiner": "MaraFW rel 3.12_401", "Model": "Antminer S19k Pro"},
+                        {"temp_chip1": "49-58", "temp_chip2": "49-56", "temp_chip3": "0-0-0-0", "temp_pcb1": "44-53", "temp_pcb2": "44-51"}]},
+    "pools": {"POOLS": [{"URL": "stratum+tcp://192.168.1.5:3333", "Status": "Alive", "Priority": 0, "User": "bc1qtest.S19KPro",
+                         "Stratum Active": False, "Getworks": 6},
+                        {"URL": "stratum+tcp://solo.example.com:3333", "Status": "Dead", "Priority": 1, "User": "x.y"}]},
+}
+_braiins_summary = {"STATUS": [{"Description": "BOSer"}], "SUMMARY": [{"MHS 5s": 1.2e8}]}
+server.cgminer = lambda ip, cmd, timeout=3: (_mara if ip == "10.9.9.10" else {"summary": _braiins_summary})[cmd]
+server.http_json = _fake_http
+server.kind_cache.pop("10.9.9.10", None)
+_m = server.poll_one("10.9.9.10")  # AxeOS 404, then MARA answers
+_not_mara = None
+try:
+    server.poll_mara("10.9.9.11")
+except ValueError:
+    _not_mara = True
+server.http_json, server.cgminer = _real_http, _real_cgminer
+check("MARA firmware is read in TH/s with its name, pool and temperatures", _m["kind"] == "mara" and _m["name"] == "S19KPro"
+      and abs(_m["ths"] - 100.0555) < 1e-6 and abs(_m["ths_long"] - 100.0775) < 1e-6 and _m["temp"] == 58 and _m["temp2"] == 53
+      and _m["pool"] == "Solo45" and _m["on_fallback"] is False and _m["power"] is None and _not_mara,
+      str({k: _m.get(k) for k in ("kind", "name", "ths", "temp", "temp2", "pool")}))
+_saved = dict(server.S["miners"])
+server.S["miners"].clear()
+server.S["miners"]["10.9.9.12"] = {"ip": "10.9.9.12", "fails": 9, "first_seen": time.time() - 2 * 86400, "last_ok": time.time() - 2 * 86400}
+server.S["miners"]["10.9.9.13"] = {"ip": "10.9.9.13", "fails": 0, "first_seen": time.time() - 2 * 86400, "last_ok": time.time() - 60}
+_ips = server.miner_ips()
+check("a miner gone for a day leaves the table, a working one stays", "10.9.9.12" not in _ips and "10.9.9.13" in _ips)
+server.S["miners"].clear()
+server.S["miners"].update(_saved)
 _workers = server.S["solo45"].get("workers")
 server.S["solo45"]["workers"] = [{"name": "ThorX1", "connected": 0, "hashrate_1h": 3e12, "last_height": 969700}]
 _e1 = server.miner_extras({"name": "ThorX1", "height": None, "power": 33}, time.time())
