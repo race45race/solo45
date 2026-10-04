@@ -279,6 +279,52 @@ body.privacy .sensitive { filter: blur(6px); }
     </div>
   </section>
 
+  <section class="card" style="margin-bottom:12px">
+    <h2>Miners <span class="muted" id="minerCount"></span></h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th class="first">Miner</th><th>Status</th><th>Pool</th>
+          <th class="r">Hashrate</th><th class="r">Power · cost</th><th class="r hide-sm">J/TH</th>
+          <th class="r" title="Now (chip / VR), and the last 24 hours: chip line solid, VR line faint">Temp · 24h</th><th class="r hide-sm">Best share</th><th class="r hide-sm">Shares</th><th class="r hide-sm" title="The block height this miner is working on (your node's tip + 1)">Mining block</th><th class="r">Uptime</th>
+        </tr></thead>
+        <tbody id="miners"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Live shares <span class="muted">every share your miners send to Solo45, newest first · share value / the bar it had to beat</span></h2>
+    <div class="feed-head" id="feedHead"></div>
+    <div class="feed" id="feed"><span class="faint">Waiting for shares…</span></div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px">
+    <h2>Best share today <span class="muted" id="btNote">typical = the best share you'd expect from the hashes each miner has done today</span></h2>
+    <div class="feed-head" id="btFleet"></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="first">Miner</th><th class="r">Best today</th><th class="r">When</th><th class="r">Typical so far</th><th class="r">vs typical</th><th>Luck</th></tr></thead>
+        <tbody id="btRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:12px;display:none" id="tuneCard">
+    <h2>Tuning report <span class="muted">suggestions only: nothing here changes your miners</span></h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th class="first">Miner</th><th class="r">Setting</th><th class="r hide-sm">J/TH</th><th class="r">Chip / VR</th>
+          <th class="r" title="How fast the chip's own error counter climbs (last 15 minutes). The total since restart says little; a fast climb means the chip is struggling at this setting.">Chip errors</th>
+          <th class="r" title="Work Solo45 counted from this miner's shares over the last hour, vs what it reports. Swings about ±10% with share luck.">Pool sees</th><th>Suggestion</th>
+        </tr></thead>
+        <tbody id="tuneRows"></tbody>
+      </table>
+    </div>
+    <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. Braiins OS miners tune themselves.</div>
+  </section>
+
   <section class="grid2">
     <div class="card" id="blockCard">
       <h2>Latest block <span class="muted">how fast your miners switched</span></h2>
@@ -304,35 +350,6 @@ body.privacy .sensitive { filter: blur(6px); }
         </div>
       </div>
     </div>
-  </section>
-
-  <section class="card" style="margin-bottom:12px">
-    <h2>Miners <span class="muted" id="minerCount"></span></h2>
-    <div class="tablewrap">
-      <table>
-        <thead><tr>
-          <th class="first">Miner</th><th>Status</th><th>Pool</th>
-          <th class="r">Hashrate</th><th class="r">Power · cost</th><th class="r hide-sm">J/TH</th>
-          <th class="r" title="Now (chip / VR), and the last 24 hours: chip line solid, VR line faint">Temp · 24h</th><th class="r hide-sm">Best share</th><th class="r hide-sm">Shares</th><th class="r hide-sm" title="The block height this miner is working on (your node's tip + 1)">Mining block</th><th class="r">Uptime</th>
-        </tr></thead>
-        <tbody id="miners"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="card" style="margin-bottom:12px;display:none" id="tuneCard">
-    <h2>Tuning report <span class="muted">suggestions only: nothing here changes your miners</span></h2>
-    <div class="tablewrap">
-      <table>
-        <thead><tr>
-          <th class="first">Miner</th><th class="r">Setting</th><th class="r hide-sm">J/TH</th><th class="r">Chip / VR</th>
-          <th class="r" title="How fast the chip's own error counter climbs (last 15 minutes). The total since restart says little; a fast climb means the chip is struggling at this setting.">Chip errors</th>
-          <th class="r" title="Work Solo45 counted from this miner's shares over the last hour, vs what it reports. Swings about ±10% with share luck.">Pool sees</th><th>Suggestion</th>
-        </tr></thead>
-        <tbody id="tuneRows"></tbody>
-      </table>
-    </div>
-    <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. Braiins OS miners tune themselves.</div>
   </section>
 
   <section class="card" style="margin-bottom:12px">
@@ -453,25 +470,8 @@ body.privacy .sensitive { filter: blur(6px); }
   </section>
 
   <section class="card" style="margin-bottom:12px">
-    <h2>Best share today <span class="muted" id="btNote">typical = the best share you'd expect from the hashes each miner has done today</span></h2>
-    <div class="feed-head" id="btFleet"></div>
-    <div class="tablewrap">
-      <table>
-        <thead><tr><th class="first">Miner</th><th class="r">Best today</th><th class="r">When</th><th class="r">Typical so far</th><th class="r">vs typical</th><th>Luck</th></tr></thead>
-        <tbody id="btRows"></tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="card" style="margin-bottom:12px">
     <h2>Network &amp; node <span class="muted" id="nodeNote"></span></h2>
     <div class="stats" id="nodeStats"><span class="faint">Asking your node…</span></div>
-  </section>
-
-  <section class="card" style="margin-bottom:12px">
-    <h2>Live shares <span class="muted">every share your miners send to Solo45, newest first · share value / the bar it had to beat</span></h2>
-    <div class="feed-head" id="feedHead"></div>
-    <div class="feed" id="feed"><span class="faint">Waiting for shares…</span></div>
   </section>
 
   <section class="card blocks">
