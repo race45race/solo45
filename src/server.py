@@ -941,27 +941,49 @@ def record(ip, result, err):
         m["polled"] = t
 
 
+OFFLINE_RETRY_S = 60  # an offline miner is asked again this often, instead of every poll
+
+
+def poll_job(ip):
+    try:
+        record(ip, poll_one(ip), None)
+    except Exception as e:
+        record(ip, None, e)
+
+
+def poll_round(pool, inflight, start):
+    """Start this round's miner reads and return at once. A slow or offline miner (which can take
+    seconds to time out) finishes in the background instead of holding up the others, so the quick
+    reads after a new block always start on time. Returns the IPs started."""
+    fast = start < fast_poll_until
+    ips = miner_ips()
+    if fast:
+        ips = [ip for ip in ips if kind_cache.get(ip) == "bitaxe"]
+    else:
+        with lock:
+            resting = {ip for ip, m in S["miners"].items()
+                       if m.get("ok") is False and start - m.get("polled", 0) < OFFLINE_RETRY_S}
+        ips = [ip for ip in ips if ip not in resting]
+    started = [ip for ip in ips if ip not in inflight or inflight[ip].done()]
+    for ip in started:
+        inflight[ip] = pool.submit(poll_job, ip)
+    return started
+
+
 def poll_loop():
     pool = ThreadPoolExecutor(max_workers=24)
+    inflight = {}  # ip -> the read in progress
+    was_fast = False
     while True:
         start = time.time()
         fast = start < fast_poll_until
-        ips = miner_ips()
-        if fast:
-            ips = [ip for ip in ips if kind_cache.get(ip) == "bitaxe"]
-
-        def job(ip):
-            try:
-                record(ip, poll_one(ip), None)
-            except Exception as e:
-                record(ip, None, e)
-
-        list(pool.map(job, ips))
-        if fast:
+        poll_round(pool, inflight, start)
+        if fast or was_fast:  # save the switch times while they come in, and once more at the end
             with lock:
                 tip = S["tip"]
                 if tip and tip["live"]:
                     save_blocks()
+        was_fast = fast
         # after a block: every 0.2 s for 2 s (a Bitaxe switches in well under a second), then every 0.5 s
         interval = (0.2 if fast_poll_until - start > 6 else 0.5) if fast else CFG["poll_seconds"]
         # wait out the interval, but start fast polling at once if a block arrives meanwhile

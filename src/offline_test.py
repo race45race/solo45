@@ -403,6 +403,41 @@ try:
 except Exception:
     _ok = False
 check("a miner's text 'last share' can't break the page", _ok)
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+_real = (server.miner_ips, server.poll_one, server.record)
+_calls = []
+
+
+def _slow_poll_one(ip):
+    if ip == "10.9.9.20":
+        time.sleep(3)  # an offline miner timing out
+        raise TimeoutError("timed out")
+    return {}
+
+
+server.miner_ips = lambda: ["10.9.9.20", "10.9.9.21"]
+server.poll_one = _slow_poll_one
+server.record = lambda ip, r, e: _calls.append(ip)
+_pool, _inflight = ThreadPoolExecutor(4), {}
+_t0 = time.time()
+_r1 = server.poll_round(_pool, _inflight, _t0)
+_dt = time.time() - _t0
+time.sleep(0.3)
+_r2 = server.poll_round(_pool, _inflight, time.time())  # the slow one is still busy: only the other is asked again
+_saved_m = dict(server.S["miners"])
+server.S["miners"].clear()
+server.S["miners"]["10.9.9.20"] = {"ok": False, "polled": time.time() - 10}
+server.miner_ips = lambda: ["10.9.9.20"]
+_r3 = server.poll_round(_pool, {}, time.time())  # offline and asked 10 s ago: rests
+server.S["miners"]["10.9.9.20"]["polled"] = time.time() - 70
+_r4 = server.poll_round(_pool, {}, time.time())  # a minute later: asked again
+_pool.shutdown(wait=True)  # let the slow reads finish before putting the real functions back
+server.S["miners"].clear()
+server.S["miners"].update(_saved_m)
+server.miner_ips, server.poll_one, server.record = _real
+check("a slow or offline miner can't hold up the others' polling", _dt < 0.5 and set(_r1) == {"10.9.9.20", "10.9.9.21"}
+      and _r2 == ["10.9.9.21"] and "10.9.9.21" in _calls, "(round took %.2f s, then %s)" % (_dt, _r2))
+check("an offline miner is asked once a minute, not every poll", _r3 == [] and _r4 == ["10.9.9.20"])
 _saved = dict(server.S["miners"])
 server.S["miners"].clear()
 server.S["miners"]["10.9.9.12"] = {"ip": "10.9.9.12", "fails": 9, "first_seen": time.time() - 2 * 86400, "last_ok": time.time() - 2 * 86400}
