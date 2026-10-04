@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.28"
+version: "0.1.29"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Fixes the dashboard not loading when a miner with stock Bitmain firmware (for example an Antminer S17 Pro) is connected: it reports its last share time as text, which the dashboard couldn't handle. Such values are now ignored safely, and stock Bitmain firmware gets its own reader, so these miners show their name, hashrate, temperatures, pool, shares and block-switch timing. Their power isn't shown, because the stock firmware's API doesn't report it.
+  More accurate block-switch times: the dashboard now reads each miner on its own, so one slow or switched-off miner can no longer delay the quick checks after a new block (before, every Bitaxe could show about 2.5 s on some blocks while a dead miner timed out). Miners that are offline are now checked once a minute instead of every 5 seconds, until they come back.
 
 
 developer: race45race
