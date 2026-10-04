@@ -637,7 +637,7 @@ def poll_braiins(ip):
         "uptime": summ.get("Elapsed"),
         "pool": pool_name(host, port),
         "on_fallback": bool(active) and active.get("Priority", 0) != lowest_prio,
-        "last_share": active.get("Last Share Time") if active else None,
+        "last_share": active.get("Last Share Time") if active and isinstance(active.get("Last Share Time"), (int, float)) else None,
         "block_found": (summ.get("Found Blocks") or 0) > 0,
         "pools": [{"url": p.get("URL"), "status": p.get("Status"),
                    "active": bool(p.get("Stratum Active")), "priority": p.get("Priority")}
@@ -706,6 +706,58 @@ def poll_mara(ip):
     }
 
 
+def fnum(v):
+    """A number from the API, which stock Bitmain firmware sometimes sends as text ("38537.88")."""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def poll_bitmain(ip):
+    """Stock Bitmain firmware (bmminer, e.g. an Antminer S17 Pro): CGMiner API with hashrates in GH/s,
+    sometimes as text, and the last share time as text. No power reading. Read-only."""
+    version = (cgminer(ip, "version").get("VERSION") or [{}])[0]
+    if "BMMiner" not in version or "BOSer" in version or "MaraFW" in str(version.get("BMMiner")):
+        raise ValueError("not stock Bitmain firmware")
+    summ = cgminer(ip, "summary")["SUMMARY"][0]
+    stats = cgminer(ip, "stats").get("STATS", [])
+    st = (stats + [{}, {}])[1]
+    pools = cgminer(ip, "pools").get("POOLS", [])
+    active = active_pool(pools, guess=True)
+    lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
+    host, port, user = "", "", ""
+    if active:
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        user = active.get("User", "")
+    return {
+        "kind": "bitmain",
+        "name": user.split(".", 1)[1] if "." in user else ip,
+        "model": "Bitmain · " + str(version.get("Type") or "Antminer"),
+        "ths_now": fnum(summ.get("GHS 5s")) / 1000,
+        "ths": fnum(summ.get("GHS 5s")) / 1000,
+        "ths_long": fnum(summ.get("GHS 30m") or summ.get("GHS av")) / 1000,
+        "expected_ths": None,
+        "temp": hottest(st, "temp_chip"),
+        "temp2": hottest(st, "temp_pcb"),
+        "power": None,  # stock firmware's API doesn't report it
+        "fan": None,
+        "best": as_num(summ.get("Best Share")),
+        "best_session": None,
+        "accepted": summ.get("Accepted"),
+        "rejected": summ.get("Rejected"),
+        "hw_errors": summ.get("Hardware Errors"),
+        "height": None,
+        "uptime": summ.get("Elapsed"),
+        "pool": pool_name(host, port),
+        "on_fallback": bool(active) and active.get("Priority", 0) != lowest_prio,
+        "version": version.get("Miner"),
+        "pools": [{"url": p.get("URL"), "status": p.get("Status"), "active": p is active,
+                   "priority": p.get("Priority")} for p in pools],
+    }
+
+
 thor_cache = {}  # ip -> device info, uptime and recent hashrate samples (info and uptime are read once a minute)
 
 
@@ -759,7 +811,8 @@ def poll_thor(ip):
     }
 
 
-POLLERS = {"bitaxe": poll_bitaxe, "mara": poll_mara, "braiins": poll_braiins, "thor": poll_thor}  # MARA before Braiins: its API looks alike
+POLLERS = {"bitaxe": poll_bitaxe, "mara": poll_mara, "bitmain": poll_bitmain, "braiins": poll_braiins,
+           "thor": poll_thor}  # MARA and stock Bitmain before Braiins: their APIs look alike
 
 
 def unreachable(e):
@@ -927,10 +980,10 @@ def braiins_work_loop():
     """
     last = {}
     while True:
-        for ip, kind in [(ip, k) for ip, k in list(kind_cache.items()) if k in ("braiins", "mara") and ip not in CFG["ignore"]]:
+        for ip, kind in [(ip, k) for ip, k in list(kind_cache.items()) if k in ("braiins", "mara", "bitmain") and ip not in CFG["ignore"]]:
             try:
                 pools = cgminer(ip, "pools", timeout=1).get("POOLS", [])
-                active = active_pool(pools, guess=kind == "mara")
+                active = active_pool(pools, guess=kind in ("mara", "bitmain"))
                 g = (active.get("URL"), active.get("Getworks")) if active else None
             except Exception:
                 continue
@@ -955,12 +1008,12 @@ def miner_status(m, tip):
     if m.get("on_fallback"):
         return "warn", "On fallback pool"
     if m.get("temp") and ((m["kind"] in ("bitaxe", "thor") and m["temp"] >= 70) or
-                          (m["kind"] in ("braiins", "mara") and m["temp"] >= 85)):
+                          (m["kind"] in ("braiins", "mara", "bitmain") and m["temp"] >= 85)):
         return "warn", "Running hot"
     exp = m.get("expected_ths")
     if exp and m.get("ths") is not None and m["ths"] < 0.6 * exp and (m.get("uptime") or 0) > 300:
         return "warn", "Hashrate low"
-    if m.get("last_share") and time.time() - m["last_share"] > 180:
+    if isinstance(m.get("last_share"), (int, float)) and m["last_share"] and time.time() - m["last_share"] > 180:
         return "warn", "No shares for %d min" % ((time.time() - m["last_share"]) // 60)
     if tip and m.get("height") and m["height"] <= tip["height"] and now_ms() - tip["seen_ms"] > 20000:
         return "warn", "Working on old block"

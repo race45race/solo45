@@ -374,6 +374,35 @@ check("MARA firmware is read in TH/s with its name, pool and temperatures", _m["
       and abs(_m["ths"] - 100.0555) < 1e-6 and abs(_m["ths_long"] - 100.0775) < 1e-6 and _m["temp"] == 58 and _m["temp2"] == 53
       and _m["pool"] == "Solo45" and _m["on_fallback"] is False and _m["power"] is None and _not_mara,
       str({k: _m.get(k) for k in ("kind", "name", "ths", "temp", "temp2", "pool")}))
+_s17 = {
+    "version": {"VERSION": [{"BMMiner": "1.0.0", "API": "3.1", "Miner": "19.10.1.3", "Type": "Antminer S17 Pro"}]},
+    "summary": {"STATUS": [{"Description": "cgminer 1.0.0"}],
+                "SUMMARY": [{"GHS 5s": "38537.88", "GHS av": 46111.62, "GHS 30m": 46111.62, "Accepted": 58, "Rejected": 0,
+                             "Elapsed": 82, "Best Share": 378593, "Hardware Errors": 0}]},
+    "stats": {"STATS": [{"Type": "Antminer S17 Pro"}, {"temp_chip1": "49-52-45-49", "temp_chip2": "50-53-46-48", "temp_pcb1": "31-40-29-37", "fan1": 5400}]},
+    "pools": {"POOLS": [{"URL": "stratum+tcp://192.168.1.5:3333", "Status": "Alive", "Priority": 0, "User": "bc1qtest.S17Pro",
+                         "Stratum Active": True, "Last Share Time": "0:00:01", "Getworks": 3}]},
+}
+_bos = {"version": {"VERSION": [{"API": "3.7", "BOSer": "boser-buildroot"}]}, "summary": _braiins_summary}
+server.cgminer = lambda ip, cmd, timeout=3: (_s17 if ip == "10.9.9.14" else _bos)[cmd]
+server.http_json = _fake_http
+server.kind_cache.pop("10.9.9.14", None)
+_b = server.poll_one("10.9.9.14")
+_not_stock = None
+try:
+    server.poll_bitmain("10.9.9.15")
+except ValueError:
+    _not_stock = True
+server.http_json, server.cgminer = _real_http, _real_cgminer
+check("stock Bitmain firmware is read in TH/s, text values and all", _b["kind"] == "bitmain" and _b["name"] == "S17Pro"
+      and abs(_b["ths"] - 38.53788) < 1e-6 and abs(_b["ths_long"] - 46.11162) < 1e-6 and _b["temp"] == 53 and _b["temp2"] == 40
+      and _b["pool"] == "Solo45" and _not_stock, str({k: _b.get(k) for k in ("kind", "name", "ths", "temp", "temp2", "pool")}))
+_ok = True
+try:
+    server.miner_status({"name": "x", "kind": "braiins", "temp": 50, "ths": 1, "last_share": "0:00:01", "ok": True}, None)
+except Exception:
+    _ok = False
+check("a miner's text 'last share' can't break the page", _ok)
 _saved = dict(server.S["miners"])
 server.S["miners"].clear()
 server.S["miners"]["10.9.9.12"] = {"ip": "10.9.9.12", "fails": 9, "first_seen": time.time() - 2 * 86400, "last_ok": time.time() - 2 * 86400}
