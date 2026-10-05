@@ -88,6 +88,12 @@ check("coinbase has witness commitment", len(dec["vout"]) == 2 and dec["vout"][1
 header = job.header(coinbase, job.version, job.curtime, 0)
 res = rpc.call("getblocktemplate", {"mode": "proposal", "data": job.block(header, coinbase).hex()})
 check("bitcoind accepts full block proposal", res is None, "(%d txs, result %r)" % (len(job.tx_data) + 1, res))
+_etpl = P.empty_template(rpc.call("getblockheader", tpl["previousblockhash"]), tpl["version"])
+if _etpl:
+    _ej = P.Job("e", _etpl, cfg["coinbase_tag"].encode())
+    _ecb = _ej.coinb1 + bytes(12) + _ej.coinb2(spk)
+    _eres = rpc.call("getblocktemplate", {"mode": "proposal", "data": _ej.block(_ej.header(_ecb, _ej.version, _ej.curtime, 0), _ecb).hex()})
+    check("bitcoind accepts an empty-block-first proposal", _eres is None, "(height %d, result %r)" % (_etpl["height"], _eres))
 for n_tx in (0, 1, 2, 3):  # small blocks exercise odd/even merkle edge cases
     # the first n_tx transactions that have no in-template parents
     txs = [t for t in tpl["transactions"] if not t.get("depends")][:n_tx]

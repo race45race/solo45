@@ -379,6 +379,10 @@ body.privacy .sensitive { filter: blur(6px); }
       <label><input type="checkbox" id="payForce"> <b>Always pay my address</b></label>
       <span class="muted" id="payForceNote"></span>
     </div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label><input type="checkbox" id="emptyFirst"> <b>Empty block first</b></label>
+      <span class="muted" id="emptyFirstNote">on a new block, miners get coinbase-only work at once, then the full template after <span id="emptyHold">10</span> s</span>
+    </div>
     <div class="ai-foot" style="margin:0 0 14px">On: every miner pays the address above, whatever its username says, so nobody else on your network can mine to their own address on your pool. Off: a miner with a Bitcoin address at the start of its username (address.name) pays that address instead, handy for a friend's miner.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label for="kwhPrice">Electricity price:</label>
@@ -901,7 +905,8 @@ function renderMiners(s) {
 // ---- Solo45 share difficulty (the table is rebuilt only when miners or settings change,
 // so the inputs aren't wiped while you type; the numbers update in place)
 let soloSig = "";
-let payForceBusy = false;  // while the payout switch saves, live updates don't flip it back
+let payForceBusy = false;
+let emptyFirstBusy = false;  // while the payout switch saves, live updates don't flip it back
 const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
 // ---- tuning report: read-only suggestions from what each Bitaxe already reports (no extra requests)
 const TUNE_LIMITS = {BM1368: {vr: 90, chip: 67}};  // the Hex's power stages run hotter by design
@@ -951,6 +956,8 @@ function renderSolo(s) {
   }
   if (so.default_address != null && document.activeElement !== $("payAddr")) $("payAddr").value = so.default_address;
   if (so.force_default_address != null && !payForceBusy) $("payForce").checked = !!so.force_default_address;
+  if (so.empty_first != null && !emptyFirstBusy) $("emptyFirst").checked = !!so.empty_first;
+  if (so.empty_hold_s != null) $("emptyHold").textContent = so.empty_hold_s;
   if (so.template_refresh_s != null && document.activeElement !== $("refreshS")) {
     $("refreshS").value = so.template_refresh_s;
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
@@ -1068,6 +1075,16 @@ $("guardSave").addEventListener("click", async () => {
   $("guardS").blur();
 });
 $("paySave").addEventListener("click", () => savePayout($("payAddr"), $("paySave"), $("payNote")));
+$("emptyFirst").addEventListener("change", async () => {
+  const on = $("emptyFirst").checked;
+  emptyFirstBusy = true;
+  try {
+    const r = await fetch("/api/solo45/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({empty_first: on})});
+    const j = await r.json();
+    if (!r.ok) { $("emptyFirst").checked = !on; alert(`Not saved: ${j.error || r.status}`); }
+  } catch (e) { $("emptyFirst").checked = !on; alert("Not saved: " + e.message); }
+  emptyFirstBusy = false;
+});
 $("payForce").addEventListener("change", async () => {
   const on = $("payForce").checked;
   payForceBusy = true;

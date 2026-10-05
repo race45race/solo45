@@ -93,6 +93,7 @@ services:
       - ./data/pool:/data/pool
     environment:
       SOLO45_DATA_DIR: /data/pool
+      BITCOIN_ZMQ_HASHBLOCK: tcp://your-node:28334  # optional: new blocks the moment the node has them
       SOLO45_API_TOKEN: change-me-to-a-long-random-string
       BITCOIN_RPC_URL: http://your-node:8332/
       BITCOIN_RPC_USER: your-rpc-user

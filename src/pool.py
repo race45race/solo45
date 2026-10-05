@@ -7,6 +7,8 @@ run through getblocktemplate "proposal" mode, so a malformed coinbase or
 merkle tree shows up within seconds instead of on the day a block is found.
 """
 import asyncio
+import threading
+import zmqsub
 import base64
 import collections
 import ctypes
@@ -60,6 +62,9 @@ DEFAULTS = {
     "min_diff": 256,
     "share_seconds": 5,  # vardiff aims for one share per miner every N seconds
     "block_poll_ms": 100,
+    "zmq_hashblock": "",  # the node's new-block signal (zmqpubhashblock), the fastest way to hear of a block
+    "empty_first": True,  # on a new block, send coinbase-only work at once, then the full template
+    "empty_hold_s": 10,  # how long miners stay on that empty template before the full one
     "template_refresh_s": 30,
     "stall_guard_s": 60,  # disconnect a peer that holds up a new block this long (0 = off)
 }
@@ -164,6 +169,19 @@ class RPC:
 
 
 # ------------------------------------------------------------------------- job
+
+def empty_template(prev_hdr, version, now=None):
+    """A coinbase-only template for the block on top of prev_hdr (a getblockheader reply), built without
+    asking the node for a template: work the moment a block arrives. None when the next block starts a new
+    difficulty period, whose bits can't be copied from the previous block (mainnet rules)."""
+    height = prev_hdr["height"] + 1
+    if height % 2016 == 0:
+        return None
+    mintime = prev_hdr["mediantime"] + 1
+    return {"height": height, "previousblockhash": prev_hdr["hash"], "version": version, "bits": prev_hdr["bits"],
+            "curtime": max(int(time.time() if now is None else now), mintime), "mintime": mintime,
+            "coinbasevalue": 5_000_000_000 >> (height // 210_000), "transactions": []}
+
 
 class Job:
     def __init__(self, job_id, tpl, tag, tx_cache=None):
@@ -642,13 +660,20 @@ class Pool:
         """A new job from a fresh template, or from tpl (a long-poll reply the node already built). new_tip: the
         block that prompted this; if another path already made its job meanwhile, there's nothing to do."""
         async with self.template_lock:
-            if (tpl is not None and tpl["previousblockhash"] == self.tip) or (new_tip and new_tip == self.tip):
-                return  # the other block watcher got there first
+            empty = bool(self.job) and getattr(self.job, "empty", False)
+            same_tip = (tpl is not None and tpl["previousblockhash"] == self.tip) or (new_tip and new_tip == self.tip)
+            if same_tip and (not empty or time.time() - self.job.created < self.empty_hold_s()):
+                return  # the other block watcher got there first, or the miners are still on the empty template
+            if empty and tpl is None and new_tip is None and time.time() - self.job.created < self.empty_hold_s():
+                return  # a routine refresh during the hold: the full template comes when it ends
             t0 = time.time()
-            if tpl is None:
+            if tpl is None or same_tip:  # after the hold, a fresh template (one held back is out of date)
                 tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
             node_tpl = tpl
             new_block = tpl["previousblockhash"] != self.tip
+            filled = empty and not new_block  # the full template for the block the miners got empty work for
+            if filled:
+                clean = False  # no forced restart: the miners take it at their next job change
             mode, report, filtered = self.policy_cfg["mode"], None, False
             if mode == "filter":  # only what the job needs now; the watch rules' counting waits (below)
                 report = policy.evaluate(tpl, self.policy_cfg, watch=False)
@@ -675,7 +700,7 @@ class Pool:
                 log.info("new network block %d (%s), now mining %d%s", job.height - 1, job.prev_hex, job.height,
                          " (spotted by the %s)" % source if source else "")
             log.info("%s job %s for block %d: %.8f BTC, %d txs, %s bytes, fees %.4f BTC (sent to %d workers in %d ms)",
-                     "new-block" if new_block else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
+                     "new-block" if new_block else "full" if filled else "updated", job.id, job.height, job.value / 1e8, len(job.tx_data),
                      "{:,}".format(sum(len(t) for t in job.tx_data)), job.fees / 1e8, len(workers), ms)
             # only counting, so it runs after the miners already have the job
             if mode == "watch":
@@ -686,9 +711,94 @@ class Pool:
                 self.record_policy(report, mode, filtered)
         # the node fully checks every new block's work; routine refreshes less often (see check_every_s),
         # so a short refresh interval or a slow machine doesn't keep the node busy validating
-        if new_block or time.time() - self.last_proposal >= self.check_every_s():
+        if new_block or filled or time.time() - self.last_proposal >= self.check_every_s():
             self.last_proposal = time.time()
             asyncio.get_running_loop().create_task(self.check_proposal(job))
+
+    def empty_first_on(self):
+        return bool(self.state["settings"].get("empty_first", self.cfg["empty_first"]))
+
+    def empty_hold_s(self):
+        return float(self.state["settings"].get("empty_hold_s", self.cfg["empty_hold_s"]))
+
+    async def empty_first(self, prev, source):
+        """Coinbase-only work on top of the block the node just accepted, sent before the node has built a
+        full template: the miners leave the old block at once. They stay on it for empty_hold_s, then get the
+        full template. Both jobs get the node's block check. Returns False when it can't be used (a new
+        difficulty period, a reorg, not mainnet), and the normal path then makes the job."""
+        async with self.template_lock:
+            if prev == self.tip:
+                return True
+            if not self.job or getattr(self, "chain", "main") != "main":
+                return False
+            t0 = time.time()
+            hdr = await self.call("getblockheader", prev, timeout=5)
+            if hdr.get("previousblockhash") != self.tip:
+                return False  # not the next block on top of ours (a reorg or a skipped block): use the node's template
+            tpl = empty_template(hdr, self.job.version)
+            if tpl is None:
+                return False
+            job = Job("%x" % next(self.job_ids), tpl, self.tag, self.tx_cache)
+            job.filtered, job.empty = False, True
+            self.jobs[job.id] = job
+            for jid in [j for j, old in self.jobs.items() if old.height < job.height - 1]:
+                del self.jobs[jid]
+            self.job, self.tip = job, job.prev_hex
+            workers = [w for w in self.workers if w.authorized]
+            await asyncio.gather(*(w.send_job(job, True) for w in workers), return_exceptions=True)
+            ms = round((time.time() - t0) * 1000)
+            self.last_switch = {"height": job.height, "ms": ms, "at": time.time(), "workers": len(workers)}
+            if workers:
+                self.build_times.append(ms)
+            log.info("new network block %d (%s), now mining %d (spotted by the %s)", job.height - 1, job.prev_hex,
+                     job.height, source)
+            log.info("new-block job %s for block %d: empty (coinbase only, %.8f BTC), sent to %d workers in %d ms; "
+                     "the full template follows in %g s", job.id, job.height, job.value / 1e8, len(workers), ms,
+                     self.empty_hold_s())
+        self.last_proposal = time.time()
+        loop = asyncio.get_running_loop()
+        loop.create_task(self.check_proposal(job))
+        loop.create_task(self.fill_after_hold(job))
+        return True
+
+    async def fill_after_hold(self, job):
+        """The full template for job's block, once the miners have mined the empty one for empty_hold_s."""
+        await asyncio.sleep(self.empty_hold_s())
+        if self.job is job:  # no newer block (or full template) meanwhile
+            try:
+                await self.update_template(new_tip=job.prev_hex)
+            except Exception as e:
+                log.warning("full template after the empty one: %s", e)
+
+    async def on_block_signal(self, bhash):
+        """The node's ZMQ new-block signal: the first sign of a new block, before its template exists."""
+        if bhash == self.tip:
+            return
+        try:
+            if self.empty_first_on() and await self.empty_first(bhash, "node's block signal"):
+                return
+            await self.update_template(clean=True, new_tip=bhash, source="node's block signal")
+        except Exception as e:
+            log.warning("new block %s: %s", bhash[:16], e)
+
+    def zmq_listener(self, url, loop):
+        """Runs in its own thread: the node's zmqpubhashblock feed, handed to the event loop."""
+        host, port = url.replace("tcp://", "").rsplit(":", 1)
+        while True:
+            sub = None
+            try:
+                sub = zmqsub.ZmqSub(host, int(port))
+                log.info("listening for new blocks on %s", url)
+                while True:
+                    parts = sub.recv()
+                    if len(parts) >= 2 and parts[0] == b"hashblock":
+                        asyncio.run_coroutine_threadsafe(self.on_block_signal(parts[1].hex()), loop)
+            except Exception as e:
+                log.warning("block signal %s: %s; retrying in 5 s", url, e)
+            finally:
+                if sub:
+                    sub.close()
+            time.sleep(5)
 
     def check_every_s(self):
         """How often a job refresh (same block) gets the node's check: every 10 s at most, and never more than
@@ -941,7 +1051,7 @@ class Pool:
                            "check_ms": median(self.check_times), "checks": len(self.check_times),
                            "check_every_s": round(self.check_every_s(), 1)},
                 "default_address": self.cfg["default_address"],
-                "force_default_address": self.force_default(),
+                "force_default_address": self.force_default(), "empty_first": self.empty_first_on(), "empty_hold_s": self.empty_hold_s(),
                 "needs_setup": self.default_spk is None,
                 "tag": self.cfg["coinbase_tag"],
                 "template_refresh_s": self.refresh_s(),
@@ -1098,10 +1208,21 @@ class Pool:
 
     async def set_settings(self, data):
         """Pool-wide settings from the dashboard. Takes effect right away, no restart."""
-        if not {"template_refresh_s", "stall_guard_s", "force_default_address"} & set(data):
+        if not {"template_refresh_s", "stall_guard_s", "force_default_address", "empty_first", "empty_hold_s"} & set(data):
             return 400, {"error": "nothing to change"}
         if "force_default_address" in data and not isinstance(data["force_default_address"], bool):
             return 400, {"error": "force_default_address must be true or false"}
+        if "empty_first" in data and not isinstance(data["empty_first"], bool):
+            return 400, {"error": "empty_first must be true or false"}
+        if "empty_hold_s" in data:
+            hold = float(data["empty_hold_s"])
+            if not 0 <= hold <= 60:
+                return 400, {"error": "the empty template hold must be 0 to 60 seconds"}
+            self.state["settings"]["empty_hold_s"] = hold
+            log.info("empty template hold set to %g s", hold)
+        if "empty_first" in data:
+            self.state["settings"]["empty_first"] = data["empty_first"]
+            log.info("empty block first: %s", "on" if data["empty_first"] else "off")
         if "template_refresh_s" in data:
             secs = float(data["template_refresh_s"])
             if not 1 <= secs <= 120:
@@ -1120,7 +1241,7 @@ class Pool:
             await self.repay_workers()
         self.save_state()
         return 200, {"ok": True, "template_refresh_s": self.refresh_s(), "stall_guard_s": self.stall_guard_s(),
-                     "force_default_address": self.force_default()}
+                     "force_default_address": self.force_default(), "empty_first": self.empty_first_on(), "empty_hold_s": self.empty_hold_s()}
 
     async def repay_workers(self):
         """Point connected miners at the address they should pay now; they get it with a fresh job."""
@@ -1297,7 +1418,14 @@ class Pool:
         if self.default_spk is None:
             log.warning("no payout address set yet: open the Solo45 dashboard to set one. Until then only miners "
                         "with a Bitcoin address in their username can connect")
+        try:
+            self.chain = (await self.call("getblockchaininfo"))["chain"]
+        except Exception:
+            self.chain = None  # empty block first only once we know it's mainnet
         await self.update_template(clean=True)
+        if self.cfg.get("zmq_hashblock"):
+            threading.Thread(target=self.zmq_listener, args=(self.cfg["zmq_hashblock"], asyncio.get_running_loop()),
+                             daemon=True).start()
         self.servers = [await asyncio.start_server(self.serve_stratum, "0.0.0.0", self.cfg["stratum_port"], limit=1 << 16),
                         await asyncio.start_server(self.serve_api, "0.0.0.0", self.cfg["api_port"])]
         loop = asyncio.get_running_loop()
@@ -1325,7 +1453,8 @@ class Pool:
 # Environment settings (used by the Umbrel app) win over config.json.
 ENV_SETTINGS = (("SOLO45_STRATUM_PORT", "stratum_port", int), ("SOLO45_API_PORT", "api_port", int),
                 ("BITCOIN_RPC_URL", "rpc_url", str), ("BITCOIN_RPC_USER", "rpc_user", str),
-                ("BITCOIN_RPC_PASS", "rpc_pass", str), ("BITCOIN_RPC_COOKIE", "rpc_cookie", str))
+                ("BITCOIN_RPC_PASS", "rpc_pass", str), ("BITCOIN_RPC_COOKIE", "rpc_cookie", str),
+                ("BITCOIN_ZMQ_HASHBLOCK", "zmq_hashblock", str))
 
 
 def load_config(path=os.path.join(DATA_DIR, "config.json")):

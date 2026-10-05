@@ -460,6 +460,57 @@ check("miners on the app's stratum port count as Solo45", server.pool_name("192.
 if platform.system() == "Linux":
     check("memory release (malloc_trim) available", P.malloc_trim is not None and server.malloc_trim is not None)
 
+async def empty_first_tests():
+    pool = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-empty-"))
+    pool.chain = "main"
+    pool.state["settings"]["empty_hold_s"] = 0.3
+    sent = []
+
+    class FW:
+        authorized, spk = True, None
+
+        async def send_job(self, job, clean):
+            sent.append((job.id, clean))
+    pool.workers.add(FW()) if hasattr(pool.workers, "add") else pool.workers.append(FW())
+    base = {"height": 970000, "previousblockhash": "11" * 32, "version": 0x20000000, "bits": "17022b8b",
+            "curtime": 1790000000, "mintime": 1789990000, "coinbasevalue": 312505000, "transactions": []}
+    hdr = {"hash": "22" * 32, "previousblockhash": "11" * 32, "height": 970000, "bits": "17022b8b", "mediantime": 1790000500}
+    full = dict(base, height=970001, previousblockhash="22" * 32, coinbasevalue=312600000)
+    fetched = []
+
+    async def fake_call(method, *params, timeout=15):
+        if method == "getblockheader":
+            return hdr
+        if method == "getblocktemplate":
+            if params and params[0].get("mode") == "proposal":
+                return None
+            fetched.append(1)
+            return full
+        raise AssertionError(method)
+    pool.call = fake_call
+    await pool.update_template(clean=True, tpl=base)
+    first = pool.job
+    ok = await pool.empty_first("22" * 32, "test")
+    ej = pool.job
+    await pool.update_template(clean=True, tpl=full)  # the long-poll's full template, during the hold
+    held = pool.job is ej and not fetched
+    await asyncio.sleep(0.6)  # the hold ends: a fresh full template goes out
+    fj = pool.job
+    check("empty block first: coinbase-only work for the next block at once", ok and ej.empty and ej.height == 970001
+          and ej.prev_hex == "22" * 32 and ej.value == 312500000 and not ej.tx_data and not ej.branch
+          and ej.bits == 0x17022b8b and ej.curtime >= 1790000501 and ej.witness_commitment is None
+          and ej.block(b"h" * 80, b"cb")[80:] == b"\x01cb", str((ok, ej.height, ej.value, len(ej.tx_data))))
+    check("empty block first: the full template waits out the hold, then goes out without a forced restart",
+          held and fetched and fj is not ej and fj.value == 312600000 and not getattr(fj, "empty", False)
+          and sent == [(first.id, True), (ej.id, True), (fj.id, False)], str(sent))
+    check("empty block first: not for a new difficulty period", P.empty_template(dict(hdr, height=2015), 0x20000000) is None
+          and P.empty_template(dict(hdr, height=839999), 0x20000000)["coinbasevalue"] == 312500000
+          and P.empty_template(dict(hdr, height=1049999), 0x20000000)["coinbasevalue"] == 156250000)
+    pool.chain = "test"
+    check("empty block first: mainnet only", await pool.empty_first("44" * 32, "test") is False)
+
+
+asyncio.run(empty_first_tests())
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)

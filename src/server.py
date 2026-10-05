@@ -40,6 +40,7 @@ BLOCKS_PATH = os.path.join(DATA, "blocks.json")
 DAILY_PATH = os.path.join(DATA, "best_today.json")
 BEST_HISTORY_PATH = os.path.join(DATA, "best_history.json")
 WORK_PATH = os.path.join(DATA, "work.json")
+KNOWN_PATH = os.path.join(DATA, "known_miners.json")
 TEMPS_PATH = os.path.join(DATA, "temps.json")
 NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
 
@@ -272,7 +273,8 @@ def add_block(height, bhash, seen_ms, mined_ms, live):
             blk["gobrrr_ms"] = ck_pending.pop(bhash) - blk["seen_ms"]
         if live and bhash in solo_pending:
             t, build_ms = solo_pending.pop(bhash)
-            blk["solo45_ms"], blk["solo45_build_ms"] = t - blk["seen_ms"], build_ms
+            if abs(t - blk["seen_ms"]) < 60000:  # a stale switch time (a pool restart, a missed block) isn't this block's
+                blk["solo45_ms"], blk["solo45_build_ms"] = t - blk["seen_ms"], build_ms
         if live:
             # a Braiins miner may have received the new work just before we read the log line.
             # Keep the window short: a routine Datum refresh ~0.3 s earlier was once miscounted.
@@ -375,7 +377,7 @@ def solo45_loop():
                     t = int(sw["at"] * 1000)
                     for b in S["blocks"]:
                         if b["hash"] == p["prev"]:
-                            if b["live"] and b.get("solo45_ms") is None:
+                            if b["live"] and b.get("solo45_ms") is None and abs(t - b["seen_ms"]) < 60000:
                                 b["solo45_ms"] = t - b["seen_ms"]
                                 b["solo45_build_ms"] = sw.get("ms")
                             break
@@ -957,8 +959,11 @@ def poll_round(pool, inflight, start):
     reads after a new block always start on time. Returns the IPs started."""
     fast = start < fast_poll_until
     ips = miner_ips()
-    if fast:
-        ips = [ip for ip in ips if kind_cache.get(ip) == "bitaxe"]
+    if fast:  # after a block: only the Bitaxes that haven't shown the new block yet
+        with lock:
+            done = set((S["tip"] or {}).get("miners") or {})
+            names = {ip: (S["miners"].get(ip) or {}).get("name") for ip in ips}
+        ips = [ip for ip in ips if kind_cache.get(ip) == "bitaxe" and names.get(ip) not in done]
     else:
         with lock:
             resting = {ip for ip, m in S["miners"].items()
@@ -974,7 +979,11 @@ def poll_loop():
     pool = ThreadPoolExecutor(max_workers=24)
     inflight = {}  # ip -> the read in progress
     was_fast = False
+    last_known_save = time.time()
     while True:
+        if time.time() - last_known_save > 300:
+            last_known_save = time.time()
+            save_known_miners()
         start = time.time()
         fast = start < fast_poll_until
         poll_round(pool, inflight, start)
@@ -1019,7 +1028,10 @@ def braiins_work_loop():
                     if tip and tip["live"] and t - tip["seen_ms"] <= 30000:
                         note_switch(tip, ip, t)
             last[ip] = g
-        time.sleep(0.2)
+        with lock:
+            tip = S["tip"]
+        # every 0.2 s in the 30 s after a block, every second otherwise: the counter only matters around blocks
+        time.sleep(0.2 if tip and now_ms() - tip["seen_ms"] < 30000 else 1.0)
 
 
 # ------------------------------------------------------------ derived state
@@ -1190,6 +1202,17 @@ def save_blocks():
         pass
 
 
+def save_known_miners():
+    """Miners that answered in the last day, so a restart still polls one that's on another pool for now."""
+    now = time.time()
+    with lock:
+        known = {ip: m["last_ok"] for ip, m in S["miners"].items() if m.get("last_ok") and now - m["last_ok"] < STALE_MINER_S}
+    try:
+        save_json(KNOWN_PATH, known)
+    except OSError as e:
+        print("couldn't save %s: %s" % (KNOWN_PATH, e), flush=True)
+
+
 def save_all():
     """What the loops save every 30 s to 5 min, saved at once (on the way out, so an update loses nothing)."""
     with lock:
@@ -1199,6 +1222,7 @@ def save_all():
             except OSError as e:
                 print("couldn't save %s: %s" % (path, e), flush=True)
     save_blocks()
+    save_known_miners()
 
 
 def miner_raw(ip):
@@ -1899,6 +1923,9 @@ def main():
     S["best_history"] = load_json(BEST_HISTORY_PATH, [])
     S["work"] = load_json(WORK_PATH, {})
     S["temps"] = load_json(TEMPS_PATH, {})
+    for ip, last_ok in load_json(KNOWN_PATH, {}).items():
+        if isinstance(last_ok, (int, float)) and time.time() - last_ok < STALE_MINER_S:
+            S["miners"].setdefault(ip, {"ip": ip, "fails": 0, "first_seen": time.time(), "last_ok": last_ok})
     if "since" not in S["daily"]:
         S["daily"] = {}  # an early version without a start time: start today's board fresh
     saved = load_json(BLOCKS_PATH, [])
