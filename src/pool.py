@@ -671,6 +671,13 @@ class Pool:
                 tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
             node_tpl = tpl
             new_block = tpl["previousblockhash"] != self.tip
+            if new_block and self.empty_first_on():
+                # this path saw the new block before the node's block signal did (a routine refresh or the
+                # long-poll landing just after it): the miners still get the empty job first, then the hold
+                ejob = await self._send_empty(tpl["previousblockhash"], source or "template refresh")
+                if ejob is not None:
+                    self._after_empty(ejob)
+                    return
             filled = empty and not new_block  # the full template for the block the miners got empty work for
             if filled:
                 clean = False  # no forced restart: the miners take it at their next job change
@@ -719,7 +726,7 @@ class Pool:
         return bool(self.state["settings"].get("empty_first", self.cfg["empty_first"]))
 
     def empty_hold_s(self):
-        return float(self.state["settings"].get("empty_hold_s", self.cfg["empty_hold_s"]))
+        return min(40.0, max(0.0, float(self.state["settings"].get("empty_hold_s", self.cfg["empty_hold_s"]))))
 
     async def empty_first(self, prev, source):
         """Coinbase-only work on top of the block the node just accepted, sent before the node has built a
@@ -729,37 +736,49 @@ class Pool:
         async with self.template_lock:
             if prev == self.tip:
                 return True
-            if not self.job or getattr(self, "chain", "main") != "main":
-                return False
-            t0 = time.time()
-            hdr = await self.call("getblockheader", prev, timeout=5)
-            if hdr.get("previousblockhash") != self.tip:
-                return False  # not the next block on top of ours (a reorg or a skipped block): use the node's template
-            tpl = empty_template(hdr, self.job.version)
-            if tpl is None:
-                return False
-            job = Job("%x" % next(self.job_ids), tpl, self.tag, self.tx_cache)
-            job.filtered, job.empty = False, True
-            self.jobs[job.id] = job
-            for jid in [j for j, old in self.jobs.items() if old.height < job.height - 1]:
-                del self.jobs[jid]
-            self.job, self.tip = job, job.prev_hex
-            workers = [w for w in self.workers if w.authorized]
-            await asyncio.gather(*(w.send_job(job, True) for w in workers), return_exceptions=True)
-            ms = round((time.time() - t0) * 1000)
-            self.last_switch = {"height": job.height, "ms": ms, "at": time.time(), "workers": len(workers)}
-            if workers:
-                self.build_times.append(ms)
-            log.info("new network block %d (%s), now mining %d (spotted by the %s)", job.height - 1, job.prev_hex,
-                     job.height, source)
-            log.info("new-block job %s for block %d: empty (coinbase only, %.8f BTC), sent to %d workers in %d ms; "
-                     "the full template follows in %g s", job.id, job.height, job.value / 1e8, len(workers), ms,
-                     self.empty_hold_s())
+            job = await self._send_empty(prev, source)
+        if job is None:
+            return False
+        self._after_empty(job)
+        return True
+
+    async def _send_empty(self, prev, source):
+        """The empty job for the block after prev, sent to every miner. The caller holds template_lock.
+        None when it can't be used."""
+        if not self.job or getattr(self, "chain", "main") != "main":
+            return None
+        t0 = time.time()
+        hdr = await self.call("getblockheader", prev, timeout=5)
+        if hdr.get("previousblockhash") != self.tip:
+            return None  # not the next block on top of ours (a reorg or a skipped block): use the node's template
+        tpl = empty_template(hdr, self.job.version)
+        if tpl is None:
+            return None
+        job = Job("%x" % next(self.job_ids), tpl, self.tag, self.tx_cache)
+        job.filtered, job.empty = False, True
+        self.jobs[job.id] = job
+        for jid in [j for j, old in self.jobs.items() if old.height < job.height - 1]:
+            del self.jobs[jid]
+        self.job, self.tip = job, job.prev_hex
+        workers = [w for w in self.workers if w.authorized]
+        await asyncio.gather(*(w.send_job(job, True) for w in workers), return_exceptions=True)
+        ms = round((time.time() - t0) * 1000)
+        self.last_switch = {"height": job.height, "ms": ms, "at": time.time(), "workers": len(workers)}
+        if workers:
+            self.build_times.append(ms)
+        log.info("new network block %d (%s), now mining %d (spotted by the %s)", job.height - 1, job.prev_hex,
+                 job.height, source)
+        log.info("new-block job %s for block %d: empty (coinbase only, %.8f BTC), sent to %d workers in %d ms; "
+                 "the full template follows in %g s", job.id, job.height, job.value / 1e8, len(workers), ms,
+                 self.empty_hold_s())
+        return job
+
+    def _after_empty(self, job):
+        """The node's check of the empty job, and the full template once the hold ends."""
         self.last_proposal = time.time()
         loop = asyncio.get_running_loop()
         loop.create_task(self.check_proposal(job))
         loop.create_task(self.fill_after_hold(job))
-        return True
 
     async def fill_after_hold(self, job):
         """The full template for job's block, once the miners have mined the empty one for empty_hold_s."""
@@ -1215,9 +1234,10 @@ class Pool:
         if "empty_first" in data and not isinstance(data["empty_first"], bool):
             return 400, {"error": "empty_first must be true or false"}
         if "empty_hold_s" in data:
-            hold = float(data["empty_hold_s"])
-            if not 0 <= hold <= 60:
-                return 400, {"error": "the empty template hold must be 0 to 60 seconds"}
+            hold = data["empty_hold_s"]
+            if isinstance(hold, bool) or not isinstance(hold, (int, float)) or not 1 <= hold <= 40:
+                return 400, {"error": "the empty template hold must be 1 to 40 seconds"}
+            hold = float(hold)
             self.state["settings"]["empty_hold_s"] = hold
             log.info("empty template hold set to %g s", hold)
         if "empty_first" in data:

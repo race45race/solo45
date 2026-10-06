@@ -453,6 +453,15 @@ _e2 = server.miner_extras({"name": "ThorX1", "height": 969699, "power": 33}, tim
 server.S["solo45"]["workers"] = _workers
 check("a miner without its own block number shows the block of its latest share",
       _e1.get("height") == 969700 and _e1.get("height_src") == "pool" and "height" not in _e2)
+server.braiins_wake.clear()
+_tip_before = server.S["tip"]
+server.add_block(999999, "ab" * 32, server.now_ms(), server.now_ms(), False)
+_quiet = not server.braiins_wake.is_set()
+server.add_block(999998, "cd" * 32, server.now_ms(), server.now_ms(), True)
+check("a new block wakes the Braiins work-counter loop at once", _quiet and server.braiins_wake.is_set())
+server.braiins_wake.clear()
+server.S["tip"] = _tip_before
+server.S["blocks"] = [b for b in server.S["blocks"] if b["hash"] not in ("ab" * 32, "cd" * 32)]
 server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
@@ -508,6 +517,29 @@ async def empty_first_tests():
           and P.empty_template(dict(hdr, height=1049999), 0x20000000)["coinbasevalue"] == 156250000)
     pool.chain = "test"
     check("empty block first: mainnet only", await pool.empty_first("44" * 32, "test") is False)
+
+    # a routine refresh or the long-poll that sees the new block before the node's block signal still sends empty first
+    pool2 = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-empty2-"))
+    pool2.chain = "main"
+    pool2.state["settings"]["empty_hold_s"] = 0.3
+    sent.clear()
+    fetched.clear()
+    pool2.workers.add(FW()) if hasattr(pool2.workers, "add") else pool2.workers.append(FW())
+    pool2.call = fake_call
+    await pool2.update_template(clean=True, tpl=base)
+    first2 = pool2.job
+    await pool2.update_template(clean=True, tpl=full, source="long-poll")
+    ej2 = pool2.job
+    await asyncio.sleep(0.6)
+    fj2 = pool2.job
+    check("empty block first: also when a refresh or the long-poll spots the block first",
+          getattr(ej2, "empty", False) and ej2.height == 970001 and fj2 is not ej2 and not getattr(fj2, "empty", False)
+          and sent == [(first2.id, True), (ej2.id, True), (fj2.id, False)], str(sent))
+
+    bad = [await pool2.set_settings({"empty_hold_s": v}) for v in (0, 41, "10", True, None)]
+    good = await pool2.set_settings({"empty_hold_s": 25})
+    check("empty block hold: 1 to 40 seconds only", all(s == 400 for s, _ in bad) and good[0] == 200
+          and pool2.empty_hold_s() == 25.0, str([s for s, _ in bad] + [good[0]]))
 
 
 asyncio.run(empty_first_tests())

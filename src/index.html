@@ -198,6 +198,8 @@ button.btn.small { font-size: 12px; padding: 3px 9px; }
 #celebrate p { color: var(--muted); margin: 6px 0; }
 @keyframes pop { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .feed-head { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.duo { display: grid; grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr); gap: 12px; margin-bottom: 12px; align-items: start; }
+.duo .feed .row { grid-template-columns: 62px 84px minmax(0, 1fr) 16px; }
 footer { margin-top: 20px; font-size: 12px; color: var(--faint); display: flex; gap: 16px; flex-wrap: wrap; }
 footer button { background: none; border: 1px solid var(--line); color: var(--muted); border-radius: 6px; padding: 2px 8px; font: inherit; cursor: pointer; }
 body.privacy .sensitive { filter: blur(6px); }
@@ -206,6 +208,7 @@ body.privacy .sensitive { filter: blur(6px); }
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .kpis .kpi:first-child { grid-column: 1 / -1; }
   .grid2 { grid-template-columns: 1fr; }
+  .duo { grid-template-columns: 1fr; }
 }
 @media (max-width: 520px) {
   .kpi .value { font-size: 22px; }
@@ -293,13 +296,14 @@ body.privacy .sensitive { filter: blur(6px); }
     </div>
   </section>
 
-  <section class="card" style="margin-bottom:12px">
-    <h2>Live shares <span class="muted">every share your miners send to Solo45, newest first · share value / the bar it had to beat</span></h2>
+  <section class="duo">
+  <div class="card">
+    <h2>Live shares <span class="muted">newest first · share value / the bar it had to beat</span></h2>
     <div class="feed-head" id="feedHead"></div>
     <div class="feed" id="feed"><span class="faint">Waiting for shares…</span></div>
-  </section>
+  </div>
 
-  <section class="card" style="margin-bottom:12px">
+  <div class="card">
     <h2>Best share today <span class="muted" id="btNote">typical = the best share you'd expect from the hashes each miner has done today</span></h2>
     <div class="feed-head" id="btFleet"></div>
     <div class="tablewrap">
@@ -308,6 +312,7 @@ body.privacy .sensitive { filter: blur(6px); }
         <tbody id="btRows"></tbody>
       </table>
     </div>
+  </div>
   </section>
 
   <section class="card" style="margin-bottom:12px;display:none" id="tuneCard">
@@ -381,7 +386,9 @@ body.privacy .sensitive { filter: blur(6px); }
     </div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
       <label><input type="checkbox" id="emptyFirst"> <b>Empty block first</b></label>
-      <span class="muted" id="emptyFirstNote">on a new block, miners get coinbase-only work at once, then the full template after <span id="emptyHold">10</span> s</span>
+      <span class="muted" id="emptyFirstNote">on a new block, miners get coinbase-only work at once, then the full template after</span>
+      <input type="number" id="emptyHold" min="1" max="40" step="1" style="width:60px" aria-label="Seconds on the empty template"> <span class="muted">s (1 to 40; applies from the next block)</span>
+      <span class="muted" id="emptyHoldNote"></span>
     </div>
     <div class="ai-foot" style="margin:0 0 14px">On: every miner pays the address above, whatever its username says, so nobody else on your network can mine to their own address on your pool. Off: a miner with a Bitcoin address at the start of its username (address.name) pays that address instead, handy for a friend's miner.</div>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
@@ -957,7 +964,7 @@ function renderSolo(s) {
   if (so.default_address != null && document.activeElement !== $("payAddr")) $("payAddr").value = so.default_address;
   if (so.force_default_address != null && !payForceBusy) $("payForce").checked = !!so.force_default_address;
   if (so.empty_first != null && !emptyFirstBusy) $("emptyFirst").checked = !!so.empty_first;
-  if (so.empty_hold_s != null) $("emptyHold").textContent = so.empty_hold_s;
+  if (so.empty_hold_s != null && document.activeElement !== $("emptyHold")) $("emptyHold").value = so.empty_hold_s;
   if (so.template_refresh_s != null && document.activeElement !== $("refreshS")) {
     $("refreshS").value = so.template_refresh_s;
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
@@ -1084,6 +1091,17 @@ $("emptyFirst").addEventListener("change", async () => {
     if (!r.ok) { $("emptyFirst").checked = !on; alert(`Not saved: ${j.error || r.status}`); }
   } catch (e) { $("emptyFirst").checked = !on; alert("Not saved: " + e.message); }
   emptyFirstBusy = false;
+});
+$("emptyHold").addEventListener("change", async () => {
+  const v = Number($("emptyHold").value);
+  if (!(Number.isInteger(v) && v >= 1 && v <= 40)) { $("emptyHoldNote").textContent = "Pick 1 to 40 seconds."; return; }
+  $("emptyHoldNote").textContent = "Saving…";
+  try {
+    const r = await fetch("/api/solo45/settings", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({empty_hold_s: v})});
+    const j = await r.json();
+    $("emptyHoldNote").textContent = r.ok ? `Saved: ${j.empty_hold_s} s` : `Not saved: ${j.error || r.status}`;
+    if (r.ok) $("emptyHold").blur();
+  } catch (e) { $("emptyHoldNote").textContent = "Not saved: " + e.message; }
 });
 $("payForce").addEventListener("change", async () => {
   const on = $("payForce").checked;

@@ -102,6 +102,7 @@ lock = threading.RLock()
 subscribers = set()
 fast_poll_until = 0.0
 new_block = threading.Event()  # wakes the miner poller the moment a block arrives
+braiins_wake = threading.Event()  # wakes the Braiins work-counter loop the moment a block arrives
 
 S = {
     "started": time.time(),
@@ -287,6 +288,7 @@ def add_block(height, bhash, seen_ms, mined_ms, live):
         if live:
             fast_poll_until = time.time() + 8  # Bitaxes switch within ~1 s; 8 s leaves plenty of margin
             new_block.set()
+            braiins_wake.set()
     if live:
         broadcast("block", blk)
         save_blocks()
@@ -1011,6 +1013,7 @@ def braiins_work_loop():
     """
     last = {}
     while True:
+        braiins_wake.clear()  # a block arriving from here on wakes the wait below at once
         for ip, kind in [(ip, k) for ip, k in list(kind_cache.items()) if k in ("braiins", "mara", "bitmain") and ip not in CFG["ignore"]]:
             try:
                 pools = cgminer(ip, "pools", timeout=1).get("POOLS", [])
@@ -1030,8 +1033,9 @@ def braiins_work_loop():
             last[ip] = g
         with lock:
             tip = S["tip"]
-        # every 0.2 s in the 30 s after a block, every second otherwise: the counter only matters around blocks
-        time.sleep(0.2 if tip and now_ms() - tip["seen_ms"] < 30000 else 1.0)
+        # every 0.2 s in the 30 s after a block, every second otherwise (the counter only matters around
+        # blocks), but a new block wakes it at once, so the 1 s wait never adds to the switch time it measures
+        braiins_wake.wait(0.2 if tip and now_ms() - tip["seen_ms"] < 30000 else 1.0)
 
 
 # ------------------------------------------------------------ derived state
