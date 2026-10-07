@@ -998,7 +998,8 @@ def poll_loop():
         # after a block: every 0.2 s for 2 s (a Bitaxe switches in well under a second), then every 0.5 s
         interval = (0.2 if fast_poll_until - start > 6 else 0.5) if fast else CFG["poll_seconds"]
         # wait out the interval, but start fast polling at once if a block arrives meanwhile
-        new_block.wait(max(0.1, interval - (time.time() - start)))
+        if new_block.wait(max(0.1, interval - (time.time() - start))):
+            time.sleep(0.06)  # the first check ~60 ms after the block: the miners have usually just switched
         new_block.clear()
 
 
@@ -1033,9 +1034,11 @@ def braiins_work_loop():
             last[ip] = g
         with lock:
             tip = S["tip"]
-        # every 0.2 s in the 30 s after a block, every second otherwise (the counter only matters around
-        # blocks), but a new block wakes it at once, so the 1 s wait never adds to the switch time it measures
-        braiins_wake.wait(0.2 if tip and now_ms() - tip["seen_ms"] < 30000 else 1.0)
+        # every 0.2 s in the 5 s after a block (a Braiins miner switches well inside a second), every second
+        # otherwise. A new block wakes it, and the first check comes ~60 ms later, when the miners have usually
+        # just switched, so the steps between checks don't add to the switch time it measures
+        if braiins_wake.wait(0.2 if tip and now_ms() - tip["seen_ms"] < 5000 else 1.0):
+            time.sleep(0.06)
 
 
 # ------------------------------------------------------------ derived state

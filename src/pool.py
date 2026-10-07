@@ -615,6 +615,10 @@ class Pool:
             self.policy_heights[e["height"]] = dict(e, saved=True)
         self.guard = stallguard.StallGuard(self.state.setdefault("stall_events", []))
         self.last_proposal = 0.0
+        self.held_tpl = None          # full template saved during the empty hold, sent when the hold ends
+        self.held_at = 0.0            # when held_tpl was saved
+        self.zmq_up = False           # the node's block signal is connected
+        self.proposal_checked = set() # payout scripts already accepted by a block check
 
     def refresh_s(self):
         """Typical interval between job updates (same block, fresh transactions), 1–120 s."""
@@ -656,18 +660,33 @@ class Pool:
 
     # -- work
 
-    async def update_template(self, clean=False, tpl=None, new_tip=None, source=None):
+    async def update_template(self, clean=False, tpl=None, new_tip=None, source=None, fill=False):
         """A new job from a fresh template, or from tpl (a long-poll reply the node already built). new_tip: the
-        block that prompted this; if another path already made its job meanwhile, there's nothing to do."""
+        block that prompted this; if another path already made its job meanwhile, there's nothing to do.
+        fill: the empty hold just ended, or the empty job failed its check. Send the full template now."""
         async with self.template_lock:
             empty = bool(self.job) and getattr(self.job, "empty", False)
+            holding = empty and not fill and time.time() - self.job.created < self.empty_hold_s()
             same_tip = (tpl is not None and tpl["previousblockhash"] == self.tip) or (new_tip and new_tip == self.tip)
-            if same_tip and (not empty or time.time() - self.job.created < self.empty_hold_s()):
-                return  # the other block watcher got there first, or the miners are still on the empty template
-            if empty and tpl is None and new_tip is None and time.time() - self.job.created < self.empty_hold_s():
-                return  # a routine refresh during the hold: the full template comes when it ends
+            if holding and same_tip:
+                # stay on the coinbase-only job, but remember the node's template (even one with no
+                # transactions yet) so the switch at the end of the hold does not wait on the node
+                if tpl is not None:
+                    self.held_tpl = tpl
+                    self.held_at = time.time()
+                return
+            if holding and tpl is None and new_tip is None:
+                return  # a routine refresh during the hold
+            if same_tip and not empty:
+                return  # the other block watcher got there first
+            if fill and self.job is not None:
+                clean = True  # the hold is over: every miner leaves the empty job now
+                if tpl is None and self.held_tpl and self.held_tpl.get("previousblockhash") == self.job.prev_hex:
+                    tpl = self.held_tpl
+            self.held_tpl = None
+            self.held_at = 0.0
             t0 = time.time()
-            if tpl is None or same_tip:  # after the hold, a fresh template (one held back is out of date)
+            if tpl is None or (same_tip and not fill):  # a template held back is only reused when the hold ends
                 tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
             node_tpl = tpl
             new_block = tpl["previousblockhash"] != self.tip
@@ -676,11 +695,15 @@ class Pool:
                 # long-poll landing just after it): the miners still get the empty job first, then the hold
                 ejob = await self._send_empty(tpl["previousblockhash"], source or "template refresh")
                 if ejob is not None:
+                    # keep the template this call already has, so the end of the hold does not build it again
+                    if tpl.get("previousblockhash") == ejob.prev_hex:
+                        self.held_tpl = tpl
+                        self.held_at = time.time()
                     self._after_empty(ejob)
                     return
             filled = empty and not new_block  # the full template for the block the miners got empty work for
             if filled:
-                clean = False  # no forced restart: the miners take it at their next job change
+                clean = True  # do not wait for the miner to roll off the empty job on its own
             mode, report, filtered = self.policy_cfg["mode"], None, False
             if mode == "filter":  # only what the job needs now; the watch rules' counting waits (below)
                 report = policy.evaluate(tpl, self.policy_cfg, watch=False)
@@ -756,6 +779,9 @@ class Pool:
             return None
         job = Job("%x" % next(self.job_ids), tpl, self.tag, self.tx_cache)
         job.filtered, job.empty = False, True
+        job.hold_done = asyncio.Event()  # set if the node's check rejects this empty job
+        self.held_tpl = None             # a template for the previous block must not fill this one
+        self.held_at = 0.0
         self.jobs[job.id] = job
         for jid in [j for j, old in self.jobs.items() if old.height < job.height - 1]:
             del self.jobs[jid]
@@ -781,13 +807,47 @@ class Pool:
         loop.create_task(self.fill_after_hold(job))
 
     async def fill_after_hold(self, job):
-        """The full template for job's block, once the miners have mined the empty one for empty_hold_s."""
-        await asyncio.sleep(self.empty_hold_s())
-        if self.job is job:  # no newer block (or full template) meanwhile
+        """The full template once this empty job has been mined for empty_hold_s.
+        Sleep can wake early, so wait until the hold has really elapsed. A failed block check sets hold_done.
+        A template saved at the start of the hold is fetched again in the last 2 seconds, so the job that
+        goes out at the deadline includes transactions that arrived during the hold, without an extra wait."""
+        while self.job is job:
+            left = job.created + self.empty_hold_s() - time.time()
+            if left <= 0:
+                break
+            if left > 2.0:
+                try:
+                    await asyncio.wait_for(job.hold_done.wait(), left - 2.0)
+                    break  # the empty job failed its check: leave it now
+                except asyncio.TimeoutError:
+                    continue
+            if not getattr(job, "refreshed", False):
+                job.refreshed = True
+                if self.held_tpl is None or time.time() - self.held_at >= 2:
+                    try:
+                        tpl = await self.call("getblocktemplate", {"rules": ["segwit"]})
+                    except Exception as e:
+                        log.warning("template before the end of the empty hold: %s", e)
+                        tpl = None
+                    if self.job is job and tpl and tpl.get("previousblockhash") == job.prev_hex:
+                        async with self.template_lock:
+                            if self.job is job:
+                                self.held_tpl = tpl
+                                self.held_at = time.time()
+            left = job.created + self.empty_hold_s() - time.time()
+            if left <= 0 or self.job is not job:
+                break
             try:
-                await self.update_template(new_tip=job.prev_hex)
-            except Exception as e:
-                log.warning("full template after the empty one: %s", e)
+                await asyncio.wait_for(job.hold_done.wait(), left)
+                break
+            except asyncio.TimeoutError:
+                continue
+        if self.job is not job:  # a newer block already replaced it
+            return
+        try:
+            await self.update_template(new_tip=job.prev_hex, fill=True)
+        except Exception as e:
+            log.warning("full template after the empty one: %s", e)
 
     async def on_block_signal(self, bhash):
         """The node's ZMQ new-block signal: the first sign of a new block, before its template exists."""
@@ -807,6 +867,7 @@ class Pool:
             sub = None
             try:
                 sub = zmqsub.ZmqSub(host, int(port))
+                self.zmq_up = True
                 log.info("listening for new blocks on %s", url)
                 while True:
                     parts = sub.recv()
@@ -815,6 +876,7 @@ class Pool:
             except Exception as e:
                 log.warning("block signal %s: %s; retrying in 5 s", url, e)
             finally:
+                self.zmq_up = False
                 if sub:
                     sub.close()
             time.sleep(5)
@@ -825,35 +887,43 @@ class Pool:
         waits; on a slow machine (a Raspberry Pi) the checks space out. New-block jobs are always checked."""
         return max(10.0, 60 * (median(self.check_times) or 0) / 1000)
 
+    def proposal_script(self):
+        """The payout address every block. A miner's own address only the first time it shows up."""
+        current = {w.spk for w in self.workers if w.spk}
+        fresh = current - self.proposal_checked
+        if self.pays_default() or not fresh:
+            return self.default_spk or (next(iter(current)) if current else CHECK_SPK)
+        return next(iter(fresh))
+
     async def check_proposal(self, job):
         """Have bitcoind validate a complete block built from this job (everything except proof of work)."""
-        spks = ({w.spk for w in self.workers if w.spk} | {self.default_spk}) - {None} or {CHECK_SPK}
+        spk = self.proposal_script()
         t0 = time.time()
-        for spk in spks:
-            coinbase = job.coinb1 + bytes(EN1_SIZE + EN2_SIZE) + job.coinb2(spk)
-            header = job.header(coinbase, job.version, job.curtime, 0)
-            t_call = time.time()
-            try:
-                res = await self.call("getblocktemplate", {"mode": "proposal", "data": job.block(header, coinbase).hex()}, timeout=60)
-            except Exception as e:
-                res = "rpc error: %s" % e
-            if res != "inconclusive-not-best-prevblk":
-                self.check_times.append(round((time.time() - t_call) * 1000))
-            if res == "inconclusive-not-best-prevblk":
-                return  # a newer block arrived meanwhile; the next job gets checked
-            ok = res is None
-            if not ok and getattr(job, "filtered", False):
-                log.error("the filtered template for block %d failed the block check (%s); mining the node's own "
-                          "template for this block instead", job.height, res)
-                self.policy_fallback_height = job.height
-                asyncio.get_running_loop().create_task(self.update_template(clean=True))
-            if ok:
-                log.info("block check OK for %d (job %s, %d txs) in %d ms",
-                         job.height, job.id, len(job.tx_data), (time.time() - t0) * 1000)
-            self.proposal = {"ok": ok, "result": res, "height": job.height, "at": time.time(), "outputs": len(spks)}
-            if not ok:
-                log.error("BLOCK PROPOSAL REJECTED at height %d: %s", job.height, res)
-                return
+        coinbase = job.coinb1 + bytes(EN1_SIZE + EN2_SIZE) + job.coinb2(spk)
+        header = job.header(coinbase, job.version, job.curtime, 0)
+        try:
+            res = await self.call("getblocktemplate", {"mode": "proposal", "data": job.block(header, coinbase).hex()}, timeout=60)
+        except Exception as e:
+            res = "rpc error: %s" % e
+        if res == "inconclusive-not-best-prevblk":
+            return  # a newer block arrived meanwhile; the next job gets checked
+        self.check_times.append(round((time.time() - t0) * 1000))
+        ok = res is None
+        self.proposal = {"ok": ok, "result": res, "height": job.height, "at": time.time(), "outputs": 1}
+        if ok:
+            self.proposal_checked.add(spk)
+            log.info("block check OK for %d (job %s, %d txs) in %d ms",
+                     job.height, job.id, len(job.tx_data), (time.time() - t0) * 1000)
+            return
+        log.error("BLOCK PROPOSAL REJECTED at height %d: %s", job.height, res)
+        if getattr(job, "filtered", False):
+            log.error("the filtered template for block %d failed the block check; mining the node's own "
+                      "template for this block instead", job.height)
+            self.policy_fallback_height = job.height
+            asyncio.get_running_loop().create_task(self.update_template(clean=True))
+        elif getattr(job, "empty", False) and getattr(job, "hold_done", None):
+            log.error("the empty template for block %d failed the block check; ending the hold", job.height)
+            job.hold_done.set()
 
     async def found_block(self, worker, job, header, coinbase, share_diff):
         block_hex = job.block(header, coinbase).hex()
@@ -905,7 +975,7 @@ class Pool:
     # -- loops
 
     async def watch_blocks(self):
-        """The backstop: ask for the best block every 100 ms (the long-poll below is usually first)."""
+        """The backstop: ask for the best block every 100 ms, or every 2 s while the node's block signal is connected."""
         while True:
             try:
                 best = await self.call("getbestblockhash", timeout=5)
@@ -921,7 +991,7 @@ class Pool:
             except Exception as e:
                 log.warning("block watch: %s", e)
                 await asyncio.sleep(2)
-            await asyncio.sleep(self.cfg["block_poll_ms"] / 1000)
+            await asyncio.sleep(2.0 if self.zmq_up else self.cfg["block_poll_ms"] / 1000)
 
     async def longpoll_blocks(self):
         """getblocktemplate long-polling: the node answers the moment its tip changes, with the new block's

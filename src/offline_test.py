@@ -509,9 +509,9 @@ async def empty_first_tests():
           and ej.prev_hex == "22" * 32 and ej.value == 312500000 and not ej.tx_data and not ej.branch
           and ej.bits == 0x17022b8b and ej.curtime >= 1790000501 and ej.witness_commitment is None
           and ej.block(b"h" * 80, b"cb")[80:] == b"\x01cb", str((ok, ej.height, ej.value, len(ej.tx_data))))
-    check("empty block first: the full template waits out the hold, then goes out without a forced restart",
-          held and fetched and fj is not ej and fj.value == 312600000 and not getattr(fj, "empty", False)
-          and sent == [(first.id, True), (ej.id, True), (fj.id, False)], str(sent))
+    check("empty block first: the full template waits out the hold, then goes out as a clean job",
+          held and fj is not ej and fj.value == 312600000 and not getattr(fj, "empty", False)
+          and sent == [(first.id, True), (ej.id, True), (fj.id, True)], str(sent))
     check("empty block first: not for a new difficulty period", P.empty_template(dict(hdr, height=2015), 0x20000000) is None
           and P.empty_template(dict(hdr, height=839999), 0x20000000)["coinbasevalue"] == 312500000
           and P.empty_template(dict(hdr, height=1049999), 0x20000000)["coinbasevalue"] == 156250000)
@@ -534,7 +534,30 @@ async def empty_first_tests():
     fj2 = pool2.job
     check("empty block first: also when a refresh or the long-poll spots the block first",
           getattr(ej2, "empty", False) and ej2.height == 970001 and fj2 is not ej2 and not getattr(fj2, "empty", False)
-          and sent == [(first2.id, True), (ej2.id, True), (fj2.id, False)], str(sent))
+          and sent == [(first2.id, True), (ej2.id, True), (fj2.id, True)], str(sent))
+
+    # the node rejecting the empty job ends the hold at once
+    pool3 = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-empty3-"))
+    pool3.chain = "main"
+    pool3.state["settings"]["empty_hold_s"] = 5
+    sent.clear()
+    pool3.workers.add(FW()) if hasattr(pool3.workers, "add") else pool3.workers.append(FW())
+
+    async def reject_call(method, *params, timeout=15):
+        if method == "getblocktemplate" and params and params[0].get("mode") == "proposal":
+            return "bad-cb" if getattr(pool3.job, "empty", False) else None  # the node rejects only the empty job
+        return await fake_call(method, *params, timeout=timeout)
+    pool3.call = reject_call
+    await pool3.update_template(clean=True, tpl=base)
+    t_start = time.time()
+    await pool3.empty_first("22" * 32, "test")
+    ej3 = pool3.job
+    for _ in range(30):
+        await asyncio.sleep(0.05)
+        if pool3.job is not ej3:
+            break
+    check("empty block first: a rejected empty job ends the hold at once",
+          pool3.job is not ej3 and not getattr(pool3.job, "empty", False) and time.time() - t_start < 3, str(sent))
 
     bad = [await pool2.set_settings({"empty_hold_s": v}) for v in (0, 41, "10", True, None)]
     good = await pool2.set_settings({"empty_hold_s": 25})
