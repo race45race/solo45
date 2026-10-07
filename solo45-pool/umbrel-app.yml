@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.32"
+version: "0.1.33"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  You can now choose how long miners stay on the empty block template after a new block (1 to 40 seconds, next to Empty block first in the dashboard settings). The miners now always get the empty template first, even when a routine template refresh spots the new block before the node's block signal does. Braiins OS miners' switch times are measured right when a block arrives, so they're no longer off by up to a second. Live shares and Best share today now sit side by side (stacked on phones).
+  Smoother block switching. When the empty-block hold ends, the full template is already built, so it goes out at once and every miner moves to it right away. If your node ever rejects the empty template, the hold ends immediately. Solo45 also asks your node less often while the node's new-block signal is connected. On the dashboard, Live shares now fills its column next to Best share today, and the miner switch times are measured more accurately.
 
 
 developer: race45race
