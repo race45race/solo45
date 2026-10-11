@@ -51,11 +51,7 @@ class ZmqSub:
         while True:
             flags, body = self._frame()
             if flags & COMMAND:
-                # ZMTP 3.1 heartbeat: answer a PING with a PONG carrying its context, so a node with heartbeats
-                # on keeps the connection. Other commands are not part of a message.
-                if body[:5] == b"\x04PING":
-                    self._send(b"\x04PONG" + body[7:], COMMAND)
-                continue
+                continue  # a command such as PING, not part of a message
             parts.append(body)
             if not flags & MORE:
                 return parts
