@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.34"
+version: "0.1.35"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Live shares now shows the top 3 miners since you opened the page, each with its best share. The connection to your node's new-block signal also answers the node's keep-alive checks, so it can't be dropped if the node has them turned on.
+  Back to the v0.1.33 release: this update runs exactly the v0.1.33 image again (the v0.1.34 Live shares top 3 and keep-alive reply are removed for now). Nothing else changes.
 
 
 developer: race45race
