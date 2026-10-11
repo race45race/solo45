@@ -565,6 +565,20 @@ async def empty_first_tests():
           and pool2.empty_hold_s() == 25.0, str([s for s, _ in bad] + [good[0]]))
 
 
+import socket as _socket
+import zmqsub as _zs
+_a, _b = _socket.socketpair()
+_sub = _zs.ZmqSub.__new__(_zs.ZmqSub)
+_sub.sock = _a
+_ping = b"\x04PING" + b"\x00\x64" + b"ctx1"
+_b.sendall(bytes([_zs.COMMAND, len(_ping)]) + _ping + bytes([0, 9]) + b"hashblock")
+_got = _sub.recv()
+_b.settimeout(2)
+_reply = _b.recv(64)
+check("block signal: answers a ZMTP PING with a PONG and still reads the next message",
+      _got == [b"hashblock"] and _reply == bytes([_zs.COMMAND, 9]) + b"\x04PONG" + b"ctx1", repr((_got, _reply)))
+_a.close(); _b.close()
+
 asyncio.run(empty_first_tests())
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
