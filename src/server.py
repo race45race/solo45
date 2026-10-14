@@ -921,7 +921,27 @@ def track_error_rate(ip, result, t):
     result["errors_per_min"] = round((hist[-1][1] - hist[0][1]) / span * 60, 1) if span >= 120 else None
 
 
-volt_floors = load_json(VOLT_PATH, {})  # miner name -> {"mv", "freq", "why": "auto"/"marked", "at", ...}
+def as_floor_map(floors):
+    """{name: {"<freq>": floor}}; a saved file from v0.1.37 held one floor per miner ({name: floor})."""
+    out = {}
+    for name, f in (floors or {}).items():
+        if isinstance(f, dict) and "mv" in f:
+            f = {str(f.get("freq")): f}
+        if isinstance(f, dict):
+            out[str(name)[:64]] = {str(k): v for k, v in f.items() if isinstance(v, dict)}
+    return out
+
+
+volt_floors = as_floor_map(load_json(VOLT_PATH, {}))  # name -> {"<freq>": {"mv", "freq", "why": "auto"/"marked", "at"}}
+
+
+def floor_for(name, freq):
+    """The voltage floor in effect at this frequency: the highest one saved at this frequency or below
+    (a faster chip needs at least as much voltage as a slower one did)."""
+    if freq is None:
+        return None
+    fits = [f for f in (volt_floors.get(name) or {}).values() if f.get("freq") is not None and f["freq"] <= freq]
+    return max(fits, key=lambda f: (f["mv"], f["freq"])) if fits else None
 volt_seen = {}  # ip -> {"name", "freq", "mv", "err"}: the current setting and its latest error rate
 volt_watch = {}  # ip -> a voltage drop being judged: {"freq", "from_mv", "to_mv", "since", "err_before"}
 VOLT_WATCH_S = 900  # judge once the 15-minute error window holds only the new setting
@@ -948,9 +968,12 @@ def track_volt_floor(ip, result, t):
         w = volt_watch.get(ip)
         if w and t - w["since"] >= VOLT_WATCH_S and err is not None:
             if err >= 3 * w["err_before"] and err - w["err_before"] >= 5:
-                volt_floors[name] = {"mv": int(w["from_mv"]), "freq": int(freq), "why": "auto", "at": int(t),
-                                     "tried_mv": int(mv), "err_before": w["err_before"], "err_after": err}
-                save_json(VOLT_PATH, volt_floors)
+                at_freq = volt_floors.setdefault(name, {})
+                old = at_freq.get(str(int(freq)))
+                if not old or old["mv"] < w["from_mv"]:  # never lower a floor already known for this frequency
+                    at_freq[str(int(freq))] = {"mv": int(w["from_mv"]), "freq": int(freq), "why": "auto", "at": int(t),
+                                               "tried_mv": int(mv), "err_before": w["err_before"], "err_after": err}
+                    save_json(VOLT_PATH, volt_floors)
                 print("%s: chip errors went from %g to %g a minute after %d -> %d mV at %d MHz; %d mV is now its floor"
                       % (name, w["err_before"], err, w["from_mv"], mv, freq, w["from_mv"]), flush=True)
                 volt_watch.pop(ip, None)
@@ -958,46 +981,63 @@ def track_volt_floor(ip, result, t):
                 volt_watch.pop(ip, None)
         if err is not None:
             prev["err"] = err
-    result["volt_floor"] = volt_floors.get(name)
+    result["volt_floor"] = floor_for(name, freq)
 
 
 def set_volt_floor(data):
-    """The tuning report's buttons: mark a Bitaxe's current voltage as its floor, or forget its floor."""
+    """The tuning report's buttons: mark a Bitaxe's current voltage as its floor at its current frequency, or
+    forget the floor in effect (the one at "freq" when the page names it). Floors at other frequencies stay."""
     name, action = str(data.get("name") or "")[:64], data.get("action")
     with lock:
+        m = next((m for m in S["miners"].values() if m.get("name") == name and m.get("kind") == "bitaxe"), None)
         if action == "clear":
-            if volt_floors.pop(name, None) is None:
-                return 400, {"error": "no voltage floor is saved for that miner"}
-            floor = None
+            freq = data.get("freq")
+            if freq is None and m:
+                f = floor_for(name, m.get("frequency"))
+                freq = f and f["freq"]
+            try:
+                gone = (volt_floors.get(name) or {}).pop(str(int(freq)), None)
+            except (TypeError, ValueError):
+                gone = None
+            if gone is None:
+                return 400, {"error": "no voltage floor is saved for that miner at that frequency"}
+            if not volt_floors.get(name):
+                volt_floors.pop(name, None)
+            note = "%d mV at %d MHz forgotten" % (gone["mv"], gone["freq"])
         elif action == "mark":
-            m = next((m for m in S["miners"].values() if m.get("name") == name and m.get("kind") == "bitaxe"), None)
             if not m or m.get("core_mv") is None or m.get("frequency") is None:
                 return 400, {"error": "that miner isn't reporting its voltage right now"}
-            floor = volt_floors[name] = {"mv": int(m["core_mv"]), "freq": int(m["frequency"]), "why": "marked",
-                                         "at": int(time.time())}
+            f = {"mv": int(m["core_mv"]), "freq": int(m["frequency"]), "why": "marked", "at": int(time.time())}
+            volt_floors.setdefault(name, {})[str(f["freq"])] = f
+            note = "%d mV at %d MHz" % (f["mv"], f["freq"])
         else:
             return 400, {"error": "action must be mark or clear"}
         save_json(VOLT_PATH, volt_floors)
-        for m in S["miners"].values():
-            if m.get("name") == name:
-                m["volt_floor"] = floor
-    print("%s: voltage floor %s" % (name, "%d mV at %d MHz" % (floor["mv"], floor["freq"]) if floor else "forgotten"), flush=True)
-    return 200, {"ok": True, "name": name, "floor": floor}
+        for x in S["miners"].values():
+            if x.get("name") == name:
+                x["volt_floor"] = floor_for(name, x.get("frequency"))
+        floor = floor_for(name, m.get("frequency")) if m else None
+    print("%s: voltage floor %s" % (name, note), flush=True)
+    return 200, {"ok": True, "name": name, "floor": floor, "floors": sorted((volt_floors.get(name) or {}).values(), key=lambda f: f["freq"])}
 
 
 def restore_volt_floors(floors):
-    """Voltage floors from a backup; entries that don't look right are skipped."""
+    """Voltage floors from a backup (one per frequency, or one per miner from v0.1.37); entries that don't look
+    right are skipped. Returns how many miners got at least one floor."""
     kept = 0
     with lock:
-        for name, f in (floors or {}).items():
-            try:
-                mv, freq, at = int(f["mv"]), int(f["freq"]), int(f.get("at") or 0)
-            except (TypeError, ValueError, KeyError, AttributeError):
-                continue
-            if 800 <= mv <= 1600 and 100 <= freq <= 1500:
-                volt_floors[str(name)[:64]] = {"mv": mv, "freq": freq, "why": "auto" if f.get("why") == "auto" else "marked",
-                                               "at": at}
-                kept += 1
+        for name, per_freq in as_floor_map(floors).items():
+            good = 0
+            for f in per_freq.values():
+                try:
+                    mv, freq, at = int(f["mv"]), int(f["freq"]), int(f.get("at") or 0)
+                except (TypeError, ValueError, KeyError, AttributeError):
+                    continue
+                if 800 <= mv <= 1600 and 100 <= freq <= 1500:
+                    volt_floors.setdefault(name, {})[str(freq)] = {"mv": mv, "freq": freq, "at": at,
+                                                                  "why": "auto" if f.get("why") == "auto" else "marked"}
+                    good += 1
+            kept += bool(good)
         if kept:
             save_json(VOLT_PATH, volt_floors)
     return kept
@@ -1785,7 +1825,7 @@ def make_backup():
             "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
             "ai": {k: CFG["ai"][k] for k in BACKUP_AI_KEYS if k in CFG["ai"]},
             "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
-            "volt_floors": dict(volt_floors),
+            "volt_floors": json.loads(json.dumps(volt_floors)),
         },
     }
 

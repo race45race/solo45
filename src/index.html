@@ -944,7 +944,7 @@ function renderTuning(s) {
     const ref = m.ths_long || m.ths, seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
     const L = tuneLimits(m), hot = (v, lim) => v != null && v >= lim - 3 ? "hot" : "";
     const vf = m.volt_floor;
-    const floorBtn = vf ? `<button class="btn small" type="button" data-floor="${esc(m.name)}" data-act="clear" title="Saved ${vf.why === "auto" ? "after its errors jumped" : "by you"}">Forget the ${vf.mv} mV floor</button>`
+    const floorBtn = vf ? `<button class="btn small" type="button" data-floor="${esc(m.name)}" data-act="clear" data-freq="${vf.freq}" title="Saved at ${vf.freq} MHz ${vf.why === "auto" ? "after its errors jumped" : "by you"}; floors saved at other frequencies stay">Forget the ${vf.mv} mV floor</button>`
       : m.core_mv != null ? `<button class="btn small" type="button" data-floor="${esc(m.name)}" data-act="mark" title="Save ${m.core_mv} mV as this miner's floor: the report won't suggest a lower voltage at this frequency or above">Set as floor</button>` : "";
     const advice = tuneAdvice(m, seen).map(([lvl, t]) => `<div class="${lvl === "warn" ? "hot" : "muted"}">${esc(t)}</div>`).join("")
       + (floorBtn ? `<div style="margin-top:4px">${floorBtn}</div>` : "");
@@ -963,7 +963,7 @@ $("tuneRows").addEventListener("click", e => {
   if (!b) return;
   b.disabled = true;
   fetch("api/dash/voltfloor", {method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({name: b.dataset.floor, action: b.dataset.act})})
+    body: JSON.stringify(Object.assign({name: b.dataset.floor, action: b.dataset.act}, b.dataset.freq ? {freq: +b.dataset.freq} : {}))})
     .then(r => r.json()).then(r => { if (r.error) { alert(r.error); b.disabled = false; } })
     .catch(() => { b.disabled = false; });
 });

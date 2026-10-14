@@ -134,6 +134,12 @@ SUBMIT_TRIES = 6  # a found block whose submitblock call fails (node unreachable
 SUBMIT_RETRY_S = 2.0  # ...this many seconds apart; a repeat after a success just gets "duplicate" from the node
 
 
+def node_warming_up(e):
+    """RPC error -28: the node is up but still starting (loading the block index, verifying blocks)."""
+    err = e.args[0] if e.args else None
+    return isinstance(err, dict) and err.get("code") == -28
+
+
 class RPC:
     def __init__(self, url, cookie_path, user="", password=""):
         self.url = url
@@ -940,11 +946,11 @@ class Pool:
                 try:
                     result = await loop.run_in_executor(self.submit_executor, lambda: self.rpc.call("submitblock", block_hex, timeout=60))
                     break
-                except RPCError as e:  # the node's own answer: sending the same block again won't change it
+                except Exception as e:
                     result = "error: %s" % e
-                    break
-                except Exception as e:  # the node couldn't be reached or didn't answer: send it again
-                    result = "error: %s" % e
+                    if isinstance(e, RPCError) and not node_warming_up(e):
+                        break  # the node's own answer: sending the same block again won't change it
+                    # the node couldn't be reached, didn't answer, or is still starting: send it again
                     log.critical("submitblock %s, try %d of %d failed: %s%s", block_hash, attempt, SUBMIT_TRIES, e,
                                  "; trying again" if attempt < SUBMIT_TRIES else "")
                     if attempt < SUBMIT_TRIES:

@@ -601,6 +601,16 @@ async def release_0137_tests():
     retried = len(calls) == 3 and pool.state["blocks"][-1]["result"] is None
     calls.clear()
 
+    def starting(method, *params, timeout=15):
+        calls.append(method)
+        if len(calls) < 2:
+            raise P.RPCError({"code": -28, "message": "Verifying blocks..."})
+        return None
+    pool.rpc.call = starting
+    await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
+    warmup = len(calls) == 2 and pool.state["blocks"][-1]["result"] is None
+    calls.clear()
+
     def verdict(method, *params, timeout=15):
         calls.append(method)
         raise P.RPCError({"code": -25, "message": "bad-prevblk"})
@@ -608,9 +618,9 @@ async def release_0137_tests():
     await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
     once = len(calls) == 1 and "bad-prevblk" in str(pool.state["blocks"][-1]["result"])
     with open(os.path.join(pool.data_dir, "blocks_found.jsonl")) as f:
-        saved = len(f.read().splitlines()) == 2
-    check("a found block is sent again when the node can't be reached, not after the node's verdict",
-          retried and once and saved, "(retried %s, verdict once %s, saved %s)" % (retried, once, saved))
+        saved = len(f.read().splitlines()) == 3
+    check("a found block is sent again when the node can't be reached or is still starting, not after its verdict",
+          retried and warmup and once and saved, "(retried %s, warmup %s, verdict once %s, saved %s)" % (retried, warmup, once, saved))
     await asyncio.sleep(0.05)
 
 
@@ -625,15 +635,15 @@ server.track_volt_floor("v", dict(_r, core_mv=1240, errors_per_min=25.0), 1500.0
 _early = "BitaxeV" not in server.volt_floors
 _out = dict(_r, core_mv=1240, errors_per_min=24.0)
 server.track_volt_floor("v", _out, 1010.0 + server.VOLT_WATCH_S)
-_f = server.volt_floors.get("BitaxeV") or {}
+_f = server.floor_for("BitaxeV", 575) or {}
 server.track_volt_floor("q", dict(_r, name="BitaxeQ", core_mv=1250, errors_per_min=2.0), 1000.0)
 server.track_volt_floor("q", dict(_r, name="BitaxeQ", core_mv=1225, errors_per_min=None), 1010.0)
 server.track_volt_floor("q", dict(_r, name="BitaxeQ", core_mv=1225, errors_per_min=3.0), 1010.0 + server.VOLT_WATCH_S)
 _quiet = "BitaxeQ" not in server.volt_floors
 server.S["miners"]["10.9.9.20"] = {"ip": "10.9.9.20", "name": "BitaxeM", "kind": "bitaxe", "core_mv": 1275, "frequency": 575}
 _mk = server.set_volt_floor({"name": "BitaxeM", "action": "mark"})
-_marked = server.volt_floors.get("BitaxeM", {}).get("mv") == 1275 and server.S["miners"]["10.9.9.20"]["volt_floor"]["why"] == "marked"
-_saved = server.load_json(server.VOLT_PATH, {}).get("BitaxeM", {}).get("mv") == 1275
+_marked = (server.floor_for("BitaxeM", 575) or {}).get("mv") == 1275 and server.S["miners"]["10.9.9.20"]["volt_floor"]["why"] == "marked"
+_saved = server.load_json(server.VOLT_PATH, {}).get("BitaxeM", {}).get("575", {}).get("mv") == 1275
 _cl = server.set_volt_floor({"name": "BitaxeM", "action": "clear"})
 _bad = server.set_volt_floor({"name": "BitaxeM", "action": "clear"})[0] == 400
 _back = server.restore_volt_floors({"BitaxeR": {"mv": 1260, "freq": 600, "why": "marked"}, "Junk": {"mv": "x"}})
@@ -641,8 +651,29 @@ server.S["miners"].pop("10.9.9.20", None)
 check("tuning report: a voltage floor is learned from an error jump, marked, forgotten and restored",
       _early and _f.get("mv") == 1265 and _f.get("tried_mv") == 1240 and _out.get("volt_floor") == _f and _quiet
       and _mk[0] == 200 and _marked and _saved and _cl[0] == 200 and "BitaxeM" not in server.volt_floors and _bad
-      and _back == 1 and server.volt_floors.get("BitaxeR", {}).get("mv") == 1260,
+      and _back == 1 and (server.floor_for("BitaxeR", 600) or {}).get("mv") == 1260,
       "(%s)" % {k: v for k, v in (("floor", _f), ("quiet", _quiet), ("marked", _marked), ("restored", _back))})
+
+# one floor per frequency: a floor learned at a lower frequency doesn't replace one marked at a higher frequency
+server.volt_floors.clear()
+server.S["miners"]["10.9.9.21"] = {"ip": "10.9.9.21", "name": "BitaxeF", "kind": "bitaxe", "core_mv": 1300, "frequency": 575}
+server.set_volt_floor({"name": "BitaxeF", "action": "mark"})  # 1300 mV at 575 MHz
+_r = {"kind": "bitaxe", "name": "BitaxeF", "frequency": 550}
+server.track_volt_floor("f", dict(_r, core_mv=1250, errors_per_min=1.0), 5000.0)
+server.track_volt_floor("f", dict(_r, core_mv=1225, errors_per_min=None), 5010.0)
+server.track_volt_floor("f", dict(_r, core_mv=1225, errors_per_min=20.0), 5010.0 + server.VOLT_WATCH_S)  # learns 1250 at 550
+_both = (server.floor_for("BitaxeF", 575) or {}).get("mv") == 1300 and (server.floor_for("BitaxeF", 560) or {}).get("mv") == 1250 \
+    and server.floor_for("BitaxeF", 500) is None
+server.S["miners"]["10.9.9.21"]["frequency"] = 600
+_hi = server.set_volt_floor({"name": "BitaxeF", "action": "clear"})  # forgets the one in effect at 600 MHz: 1300 at 575
+_left = sorted(server.volt_floors.get("BitaxeF", {})) == ["550"] and (server.floor_for("BitaxeF", 600) or {}).get("mv") == 1250
+_old = server.as_floor_map({"BitaxeO": {"mv": 1275, "freq": 575, "why": "marked", "at": 1}})
+_old_ok = _old == {"BitaxeO": {"575": {"mv": 1275, "freq": 575, "why": "marked", "at": 1}}}
+_rb = server.restore_volt_floors({"BitaxeO": {"mv": 1275, "freq": 575, "why": "marked", "at": 1}})
+server.S["miners"].pop("10.9.9.21", None)
+check("tuning report: one voltage floor per frequency (the highest in effect counts; v0.1.37 files still load)",
+      _both and _hi[0] == 200 and _left and _old_ok and _rb == 1 and (server.floor_for("BitaxeO", 600) or {}).get("mv") == 1275,
+      "(both %s, clear %s, left %s, old %s)" % (_both, _hi, _left, _old_ok))
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)
