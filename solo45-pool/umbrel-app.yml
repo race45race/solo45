@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.37"
+version: "0.1.38"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  If your node can't be reached at the moment a block is found, Solo45 now sends the block again (up to 6 tries, 2 seconds apart) instead of giving up. A settings backup now also restores Empty block first and its hold time. The Live shares top 3 counts only shares that arrive after you open the page. The tuning report remembers each Bitaxe's voltage floor: if lowering the voltage makes its errors jump, it stops suggesting lower voltages, and you can set or forget a floor with a button.
+  A found block is now also sent again if your node is up but still starting (loading or verifying blocks). The tuning report keeps a voltage floor for each frequency, so a floor found at one speed no longer replaces one found at another, and Forget removes only the floor in effect. Floors saved by v0.1.37 carry over.
 
 
 developer: race45race
