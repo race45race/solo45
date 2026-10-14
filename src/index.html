@@ -1364,6 +1364,7 @@ function renderNode(s) {
 const feedRows = [];      // newest first
 const feedSeen = new Set();  // "seq:time" keys, so the first load and the live stream can't double up
 let feedBest = 0, acceptedTimes = [];
+const minerBest = {};  // each miner's best accepted share since this page opened (for the top 3)
 function addShares(list, live) {
   let changed = false;
   for (const s of list) {
@@ -1371,7 +1372,11 @@ function addShares(list, live) {
     if (feedSeen.has(key)) continue;
     feedSeen.add(key);
     const best = !s.rejected && s.share > feedBest && feedRows.length > 0;
-    if (!s.rejected) { acceptedTimes.push(s.t); if (s.share > feedBest) feedBest = s.share; }
+    if (!s.rejected) {
+      acceptedTimes.push(s.t);
+      if (s.share > feedBest) feedBest = s.share;
+      if (s.share > (minerBest[s.worker] || 0)) minerBest[s.worker] = s.share;
+    }
     feedRows.unshift(Object.assign({}, s, {best, fresh: live}));
     changed = true;
   }
@@ -1384,7 +1389,8 @@ function renderFeed() {
   acceptedTimes = acceptedTimes.filter(t => now - t < 60);
   const rej = feedRows.filter(s => s.rejected).length;
   $("feedHead").innerHTML = `<span><b class="num">${acceptedTimes.length}</b> shares in the last minute</span>`
-    + `<span>best since this page opened <b class="num">${fmtDiff(feedBest)}</b></span>`
+    + `<span>best since this page opened: ${Object.entries(minerBest).sort((a, b) => b[1] - a[1]).slice(0, 3)
+        .map(([w, v]) => `<b class="num">${fmtDiff(v)}</b> ${esc(w)}`).join(" · ") || `<b class="num">-</b>`}</span>`
     + (rej ? `<span style="color:var(--bad)">${rej} rejected in this list</span>` : `<span>0 rejected</span>`);
   $("feed").innerHTML = feedRows.map(s => {
     const cls = s.block ? "block" : s.rejected ? "bad" : s.best ? "best" : "";
