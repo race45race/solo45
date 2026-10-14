@@ -330,7 +330,7 @@ body.privacy .sensitive { filter: blur(6px); }
         <tbody id="tuneRows"></tbody>
       </table>
     </div>
-    <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. Braiins OS miners tune themselves.</div>
+    <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. When a lower voltage makes a miner's errors jump, the report remembers the last good voltage as its floor and won't suggest going below it; you can also set or forget a floor with the button. Braiins OS miners tune themselves.</div>
   </section>
 
   <section class="grid2">
@@ -921,14 +921,18 @@ const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o
 // ---- tuning report: read-only suggestions from what each Bitaxe already reports (no extra requests)
 const TUNE_LIMITS = {BM1368: {vr: 90, chip: 67}};  // the Hex's power stages run hotter by design
 const tuneLimits = m => TUNE_LIMITS[m.asic] || {vr: 80, chip: 67};
+// a saved floor counts at its own frequency and above (a faster chip needs at least that much voltage)
+const floorFor = m => { const f = m.volt_floor; return f && m.frequency != null && m.frequency >= f.freq ? f : null; };
 function tuneAdvice(m, seen) {
-  const L = tuneLimits(m), vr = m.temp2, chip = m.temp, err = m.errors_per_min, out = [];
+  const L = tuneLimits(m), vr = m.temp2, chip = m.temp, err = m.errors_per_min, out = [], fl = floorFor(m);
+  if (fl && m.core_mv != null && m.core_mv < fl.mv) out.push(["warn", `Below its voltage floor: raise it to ${fl.mv} mV (${fl.why === "auto" ? `errors jumped at ${fl.tried_mv || "a lower"} mV` : "marked as its floor"} at ${fl.freq} MHz)`]);
   if (vr != null && vr >= L.vr - 3) out.push(["warn", `Power stage ${Math.round(vr)}°C, near its ${L.vr}°C limit: lower the frequency 25 MHz, or raise the minimum fan speed`]);
   if (chip != null && chip >= L.chip - 2 && (m.fan || 0) >= 95) out.push(["warn", "Chip near its limit with the fan maxed: lower the frequency 25 MHz"]);
   if (err != null && err >= 30) out.push(["warn", `${err} chip errors a minute: try +25 mV, or −25 MHz`]);
   if (seen != null && seen < 0.85 && (m.uptime || 0) > 7200) out.push(["warn", "The pool counts under 85% of the expected work for the last hour: try +25 mV, or −25 MHz"]);
   if (!out.length && err != null && err < 5 && vr != null && vr < L.vr - 15 && m.asic === "BM1370" && m.core_mv >= 1200 && m.frequency <= 575)
-    out.push(["ok", "Cool and clean at this speed: you could try −25 mV to save power (then watch errors and pool %)"]);
+    out.push(fl && m.core_mv - 25 < fl.mv ? ["ok", `Looks well tuned: ${fl.mv} mV is its voltage floor at this speed, so nothing lower`]
+      : ["ok", "Cool and clean at this speed: you could try −25 mV to save power (then watch errors and pool %)"]);
   return out.length ? out : [["ok", "Looks well tuned"]];
 }
 let tuneHtml = "";
@@ -939,9 +943,13 @@ function renderTuning(s) {
   const html = bx.map(m => {
     const ref = m.ths_long || m.ths, seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
     const L = tuneLimits(m), hot = (v, lim) => v != null && v >= lim - 3 ? "hot" : "";
-    const advice = tuneAdvice(m, seen).map(([lvl, t]) => `<div class="${lvl === "warn" ? "hot" : "muted"}">${esc(t)}</div>`).join("");
+    const vf = m.volt_floor;
+    const floorBtn = vf ? `<button class="btn small" type="button" data-floor="${esc(m.name)}" data-act="clear" title="Saved ${vf.why === "auto" ? "after its errors jumped" : "by you"}">Forget the ${vf.mv} mV floor</button>`
+      : m.core_mv != null ? `<button class="btn small" type="button" data-floor="${esc(m.name)}" data-act="mark" title="Save ${m.core_mv} mV as this miner's floor: the report won't suggest a lower voltage at this frequency or above">Set as floor</button>` : "";
+    const advice = tuneAdvice(m, seen).map(([lvl, t]) => `<div class="${lvl === "warn" ? "hot" : "muted"}">${esc(t)}</div>`).join("")
+      + (floorBtn ? `<div style="margin-top:4px">${floorBtn}</div>` : "");
     return `<tr><td class="first"><div class="mname">${esc(m.name)}</div><div class="msub">${esc(m.asic || "")}</div></td>
-      <td class="r num">${m.frequency != null ? `${m.frequency} MHz` : "—"}<div class="msub">${m.core_mv != null ? m.core_mv + " mV" : ""}</div></td>
+      <td class="r num">${m.frequency != null ? `${m.frequency} MHz` : "—"}<div class="msub">${m.core_mv != null ? m.core_mv + " mV" : ""}${vf ? ` · floor ${vf.mv}` : ""}</div></td>
       <td class="r num hide-sm">${m.power && m.ths ? (m.power / m.ths).toFixed(1) : "—"}</td>
       <td class="r num"><span class="${hot(m.temp, L.chip)}">${m.temp != null ? Math.round(m.temp) + "°" : "—"}</span> / <span class="${hot(m.temp2, L.vr)}">${m.temp2 != null ? Math.round(m.temp2) + "°" : "—"}</span></td>
       <td class="r num">${m.errors_per_min != null ? m.errors_per_min + "/min" : '<span class="faint" title="Needs a few minutes of readings (or this firmware has no error counter)">—</span>'}</td>
@@ -950,6 +958,15 @@ function renderTuning(s) {
   }).join("");
   if (html !== tuneHtml) { tuneHtml = html; $("tuneRows").innerHTML = html; }  // only touch the page when something changed
 }
+$("tuneRows").addEventListener("click", e => {
+  const b = e.target.closest("button[data-floor]");
+  if (!b) return;
+  b.disabled = true;
+  fetch("api/dash/voltfloor", {method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: b.dataset.floor, action: b.dataset.act})})
+    .then(r => r.json()).then(r => { if (r.error) { alert(r.error); b.disabled = false; } })
+    .catch(() => { b.disabled = false; });
+});
 
 function renderSolo(s) {
   const so = s.solo45 || {};
@@ -1375,7 +1392,7 @@ function addShares(list, live) {
     if (!s.rejected) {
       acceptedTimes.push(s.t);
       if (s.share > feedBest) feedBest = s.share;
-      if (s.share > (minerBest[s.worker] || 0)) minerBest[s.worker] = s.share;
+      if (live && s.share > (minerBest[s.worker] || 0)) minerBest[s.worker] = s.share;  // not the shares loaded with the page
     }
     feedRows.unshift(Object.assign({}, s, {best, fresh: live}));
     changed = true;

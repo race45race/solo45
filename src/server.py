@@ -42,6 +42,7 @@ BEST_HISTORY_PATH = os.path.join(DATA, "best_history.json")
 WORK_PATH = os.path.join(DATA, "work.json")
 KNOWN_PATH = os.path.join(DATA, "known_miners.json")
 TEMPS_PATH = os.path.join(DATA, "temps.json")
+VOLT_PATH = os.path.join(DATA, "volt_floors.json")  # each Bitaxe's known lowest safe core voltage
 NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
 
 CFG = {
@@ -920,6 +921,88 @@ def track_error_rate(ip, result, t):
     result["errors_per_min"] = round((hist[-1][1] - hist[0][1]) / span * 60, 1) if span >= 120 else None
 
 
+volt_floors = load_json(VOLT_PATH, {})  # miner name -> {"mv", "freq", "why": "auto"/"marked", "at", ...}
+volt_seen = {}  # ip -> {"name", "freq", "mv", "err"}: the current setting and its latest error rate
+volt_watch = {}  # ip -> a voltage drop being judged: {"freq", "from_mv", "to_mv", "since", "err_before"}
+VOLT_WATCH_S = 900  # judge once the 15-minute error window holds only the new setting
+VOLT_WATCH_MAX_S = 3600  # no jump within an hour: the lower voltage is fine
+
+
+def track_volt_floor(ip, result, t):
+    """Learn each Bitaxe's voltage floor (lock held). When the core voltage is lowered at the same frequency and
+    the chip's error rate then jumps (3 times the old rate and at least 5 more a minute), the previous voltage
+    becomes the floor for that frequency, and the tuning report stops suggesting anything lower."""
+    if result.get("kind") != "bitaxe":
+        return
+    name, freq, mv, err = result.get("name"), result.get("frequency"), result.get("core_mv"), result.get("errors_per_min")
+    if name and freq is not None and mv is not None:
+        prev = volt_seen.get(ip)
+        if prev and prev["name"] == name and (freq, mv) != (prev["freq"], prev["mv"]):
+            if freq == prev["freq"] and mv < prev["mv"] and prev["err"] is not None:
+                volt_watch[ip] = {"freq": freq, "from_mv": prev["mv"], "to_mv": mv, "since": t, "err_before": prev["err"]}
+            else:
+                volt_watch.pop(ip, None)
+            prev = None
+        if prev is None or prev["name"] != name:
+            volt_seen[ip] = prev = {"name": name, "freq": freq, "mv": mv, "err": None}
+        w = volt_watch.get(ip)
+        if w and t - w["since"] >= VOLT_WATCH_S and err is not None:
+            if err >= 3 * w["err_before"] and err - w["err_before"] >= 5:
+                volt_floors[name] = {"mv": int(w["from_mv"]), "freq": int(freq), "why": "auto", "at": int(t),
+                                     "tried_mv": int(mv), "err_before": w["err_before"], "err_after": err}
+                save_json(VOLT_PATH, volt_floors)
+                print("%s: chip errors went from %g to %g a minute after %d -> %d mV at %d MHz; %d mV is now its floor"
+                      % (name, w["err_before"], err, w["from_mv"], mv, freq, w["from_mv"]), flush=True)
+                volt_watch.pop(ip, None)
+            elif t - w["since"] >= VOLT_WATCH_MAX_S:
+                volt_watch.pop(ip, None)
+        if err is not None:
+            prev["err"] = err
+    result["volt_floor"] = volt_floors.get(name)
+
+
+def set_volt_floor(data):
+    """The tuning report's buttons: mark a Bitaxe's current voltage as its floor, or forget its floor."""
+    name, action = str(data.get("name") or "")[:64], data.get("action")
+    with lock:
+        if action == "clear":
+            if volt_floors.pop(name, None) is None:
+                return 400, {"error": "no voltage floor is saved for that miner"}
+            floor = None
+        elif action == "mark":
+            m = next((m for m in S["miners"].values() if m.get("name") == name and m.get("kind") == "bitaxe"), None)
+            if not m or m.get("core_mv") is None or m.get("frequency") is None:
+                return 400, {"error": "that miner isn't reporting its voltage right now"}
+            floor = volt_floors[name] = {"mv": int(m["core_mv"]), "freq": int(m["frequency"]), "why": "marked",
+                                         "at": int(time.time())}
+        else:
+            return 400, {"error": "action must be mark or clear"}
+        save_json(VOLT_PATH, volt_floors)
+        for m in S["miners"].values():
+            if m.get("name") == name:
+                m["volt_floor"] = floor
+    print("%s: voltage floor %s" % (name, "%d mV at %d MHz" % (floor["mv"], floor["freq"]) if floor else "forgotten"), flush=True)
+    return 200, {"ok": True, "name": name, "floor": floor}
+
+
+def restore_volt_floors(floors):
+    """Voltage floors from a backup; entries that don't look right are skipped."""
+    kept = 0
+    with lock:
+        for name, f in (floors or {}).items():
+            try:
+                mv, freq, at = int(f["mv"]), int(f["freq"]), int(f.get("at") or 0)
+            except (TypeError, ValueError, KeyError, AttributeError):
+                continue
+            if 800 <= mv <= 1600 and 100 <= freq <= 1500:
+                volt_floors[str(name)[:64]] = {"mv": mv, "freq": freq, "why": "auto" if f.get("why") == "auto" else "marked",
+                                               "at": at}
+                kept += 1
+        if kept:
+            save_json(VOLT_PATH, volt_floors)
+    return kept
+
+
 def record(ip, result, err):
     t = time.time()
     with lock:
@@ -927,6 +1010,7 @@ def record(ip, result, err):
         if result:
             track_daily_best(ip, result, t)
             track_error_rate(ip, result, t)
+            track_volt_floor(ip, result, t)
             m.update(result)
             m["fails"], m["ok"], m["last_ok"], m["error"] = 0, True, t, None
             if result.get("netdiff"):
@@ -1701,6 +1785,7 @@ def make_backup():
             "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
             "ai": {k: CFG["ai"][k] for k in BACKUP_AI_KEYS if k in CFG["ai"]},
             "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
+            "volt_floors": dict(volt_floors),
         },
     }
 
@@ -1731,6 +1816,10 @@ def restore_backup(data):
     if isinstance(notes, str) and len(notes) <= 8000:
         save_config({"notes": notes}, "ai")
         CFG["ai"]["notes"] = notes
+    if isinstance(dash.get("volt_floors"), dict) and dash["volt_floors"]:
+        n = restore_volt_floors(dash["volt_floors"])
+        if n:
+            done.append("voltage floors for %d miner%s" % (n, "s"[n == 1:]))
     if dash.get("notify"):
         step("phone alerts", save_notify_settings({k: v for k, v in dash["notify"].items() if k in BACKUP_NOTIFY_KEYS}))
     if data.get("pool"):
@@ -1893,6 +1982,9 @@ class Handler(BaseHTTPRequestHandler):
                 code, reply = post_json(CFG[api[path.rsplit("/", 1)[1]]], data)
             except OSError as e:
                 code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
+            return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/dash/voltfloor":
+            code, reply = set_volt_floor(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/settings":
             code, reply = save_dash_settings(data)

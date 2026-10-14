@@ -566,6 +566,83 @@ async def empty_first_tests():
 
 
 asyncio.run(empty_first_tests())
+
+
+async def release_0137_tests():
+    # a settings backup brings back Empty block first and its hold time
+    a = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-bk-"))
+    a.state["settings"].update(empty_first=False, empty_hold_s=25.0, template_refresh_s=40.0)
+    exp = json.loads(json.dumps(a.export_settings()))
+    exp.pop("policy", None)  # its restore asks the node for a new template: covered by the selftest
+    b = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-rs-"))
+    code, rep = await b.restore_settings(exp)
+    check("settings backup restores Empty block first and its hold time",
+          code == 200 and rep["ok"] and b.empty_first_on() is False and b.empty_hold_s() == 25.0 and b.refresh_s() == 40.0,
+          "(%s)" % "; ".join(rep["restored"] + rep["errors"]))
+
+    # a found block whose submitblock call can't reach the node is sent again; the node's own verdict is not
+    pool = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-sub-"))
+
+    async def no_template(clean=False):
+        pass
+    pool.update_template = no_template
+    P.SUBMIT_RETRY_S = 0.01
+    job = types.SimpleNamespace(block=lambda header, coinbase: b"\x01" * 81, height=900000, value=312500000)
+    miner = types.SimpleNamespace(name="BitaxeT", ip="10.0.0.5", address="bc1qtest")
+    calls = []
+
+    def flaky(method, *params, timeout=15):
+        calls.append(method)
+        if len(calls) < 3:
+            raise ConnectionRefusedError("node not answering")
+        return None
+    pool.rpc.call = flaky
+    await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
+    retried = len(calls) == 3 and pool.state["blocks"][-1]["result"] is None
+    calls.clear()
+
+    def verdict(method, *params, timeout=15):
+        calls.append(method)
+        raise P.RPCError({"code": -25, "message": "bad-prevblk"})
+    pool.rpc.call = verdict
+    await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
+    once = len(calls) == 1 and "bad-prevblk" in str(pool.state["blocks"][-1]["result"])
+    with open(os.path.join(pool.data_dir, "blocks_found.jsonl")) as f:
+        saved = len(f.read().splitlines()) == 2
+    check("a found block is sent again when the node can't be reached, not after the node's verdict",
+          retried and once and saved, "(retried %s, verdict once %s, saved %s)" % (retried, once, saved))
+    await asyncio.sleep(0.05)
+
+
+asyncio.run(release_0137_tests())
+
+# the tuning report's voltage floor: learned from an error jump after a voltage drop, or marked by hand
+server.volt_floors.clear()
+_r = {"kind": "bitaxe", "name": "BitaxeV", "frequency": 575}
+server.track_volt_floor("v", dict(_r, core_mv=1265, errors_per_min=2.0), 1000.0)
+server.track_volt_floor("v", dict(_r, core_mv=1240, errors_per_min=None), 1010.0)  # lowered (and restarted)
+server.track_volt_floor("v", dict(_r, core_mv=1240, errors_per_min=25.0), 1500.0)  # too soon to judge
+_early = "BitaxeV" not in server.volt_floors
+_out = dict(_r, core_mv=1240, errors_per_min=24.0)
+server.track_volt_floor("v", _out, 1010.0 + server.VOLT_WATCH_S)
+_f = server.volt_floors.get("BitaxeV") or {}
+server.track_volt_floor("q", dict(_r, name="BitaxeQ", core_mv=1250, errors_per_min=2.0), 1000.0)
+server.track_volt_floor("q", dict(_r, name="BitaxeQ", core_mv=1225, errors_per_min=None), 1010.0)
+server.track_volt_floor("q", dict(_r, name="BitaxeQ", core_mv=1225, errors_per_min=3.0), 1010.0 + server.VOLT_WATCH_S)
+_quiet = "BitaxeQ" not in server.volt_floors
+server.S["miners"]["10.9.9.20"] = {"ip": "10.9.9.20", "name": "BitaxeM", "kind": "bitaxe", "core_mv": 1275, "frequency": 575}
+_mk = server.set_volt_floor({"name": "BitaxeM", "action": "mark"})
+_marked = server.volt_floors.get("BitaxeM", {}).get("mv") == 1275 and server.S["miners"]["10.9.9.20"]["volt_floor"]["why"] == "marked"
+_saved = server.load_json(server.VOLT_PATH, {}).get("BitaxeM", {}).get("mv") == 1275
+_cl = server.set_volt_floor({"name": "BitaxeM", "action": "clear"})
+_bad = server.set_volt_floor({"name": "BitaxeM", "action": "clear"})[0] == 400
+_back = server.restore_volt_floors({"BitaxeR": {"mv": 1260, "freq": 600, "why": "marked"}, "Junk": {"mv": "x"}})
+server.S["miners"].pop("10.9.9.20", None)
+check("tuning report: a voltage floor is learned from an error jump, marked, forgotten and restored",
+      _early and _f.get("mv") == 1265 and _f.get("tried_mv") == 1240 and _out.get("volt_floor") == _f and _quiet
+      and _mk[0] == 200 and _marked and _saved and _cl[0] == 200 and "BitaxeM" not in server.volt_floors and _bad
+      and _back == 1 and server.volt_floors.get("BitaxeR", {}).get("mv") == 1260,
+      "(%s)" % {k: v for k, v in (("floor", _f), ("quiet", _quiet), ("marked", _marked), ("restored", _back))})
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)

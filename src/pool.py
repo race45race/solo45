@@ -130,6 +130,10 @@ class RPCError(Exception):
     pass
 
 
+SUBMIT_TRIES = 6  # a found block whose submitblock call fails (node unreachable, timeout) is sent again...
+SUBMIT_RETRY_S = 2.0  # ...this many seconds apart; a repeat after a success just gets "duplicate" from the node
+
+
 class RPC:
     def __init__(self, url, cookie_path, user="", password=""):
         self.url = url
@@ -932,9 +936,19 @@ class Pool:
         loop = asyncio.get_running_loop()
         self.submitting += 1  # a stop signal waits for this (see stop())
         try:
-            result = await loop.run_in_executor(self.submit_executor, lambda: self.rpc.call("submitblock", block_hex, timeout=60))
-        except Exception as e:
-            result = "error: %s" % e
+            for attempt in range(1, SUBMIT_TRIES + 1):
+                try:
+                    result = await loop.run_in_executor(self.submit_executor, lambda: self.rpc.call("submitblock", block_hex, timeout=60))
+                    break
+                except RPCError as e:  # the node's own answer: sending the same block again won't change it
+                    result = "error: %s" % e
+                    break
+                except Exception as e:  # the node couldn't be reached or didn't answer: send it again
+                    result = "error: %s" % e
+                    log.critical("submitblock %s, try %d of %d failed: %s%s", block_hash, attempt, SUBMIT_TRIES, e,
+                                 "; trying again" if attempt < SUBMIT_TRIES else "")
+                    if attempt < SUBMIT_TRIES:
+                        await asyncio.sleep(SUBMIT_RETRY_S)
         finally:
             self.submitting -= 1
         log.critical("submitblock %s: %s", block_hash, "accepted by the node" if result is None else "the node said %r" % (result,))
@@ -1366,9 +1380,10 @@ class Pool:
         s = data.get("settings") or {}
         if s.get("default_address"):
             await step("payout address", lambda: self.set_payout({"address": s["default_address"]}))
-        pool_settings = {k: s[k] for k in ("template_refresh_s", "stall_guard_s", "force_default_address") if k in s}
+        pool_settings = {k: s[k] for k in ("template_refresh_s", "stall_guard_s", "force_default_address",
+                                           "empty_first", "empty_hold_s") if k in s}
         if pool_settings:
-            await step("job timing, stall guard and payout switch", lambda: self.set_settings(pool_settings))
+            await step("job timing, stall guard, payout switch and empty block first", lambda: self.set_settings(pool_settings))
         for name, o in (data.get("overrides") or {}).items():
             if isinstance(o, dict):
                 await step("difficulty for %s" % name, lambda o=o, name=name: self.set_override(dict(o, name=name)))
