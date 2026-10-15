@@ -11,6 +11,7 @@ The optional Claude assistant (ai.py) needs the anthropic library from ./venv.
 import base64
 import collections
 import ctypes
+import gzip
 import json
 import math
 import os
@@ -597,6 +598,44 @@ def poll_bitaxe(ip):
     }
 
 
+BRAIINS_METRICS_S = 30  # how often to read a Braiins miner's metrics page (16 KB gzipped)
+BRAIINS_METRICS_RETRY_S = 600  # a miner without one (older Braiins OS) is asked again after this long
+braiins_metrics_cache = {}  # ip -> {"at", "ok", "psu_w", "psu_v"}
+
+
+def parse_braiins_metrics(text):
+    """The PSU's own readings from Braiins OS's Prometheus page (port 8081): measured watts (0 when the PSU
+    doesn't report them) and the measured output voltage."""
+    out = {"psu_w": None, "psu_v": None}
+    for line in text.splitlines():
+        if line.startswith('miner_power{') and 'type="psu"' in line:
+            out["psu_w"] = float(line.split("}", 1)[1].split()[0])
+        elif line.startswith('shared_psu_voltage{') and 'type="feedback"' in line:
+            out["psu_v"] = float(line.split("}", 1)[1].split()[0])
+    return out
+
+
+def http_text(url, timeout=3):
+    req = urllib.request.Request(url, headers={"Accept-Encoding": "gzip"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        body = r.read(2_000_000)
+        return (gzip.decompress(body) if r.headers.get("Content-Encoding") == "gzip" else body).decode("utf-8", "replace")
+
+
+def braiins_metrics(ip, now=None):
+    """The PSU readings for a Braiins miner, read at most every 30 s; {} when its metrics page can't be read."""
+    now = time.time() if now is None else now
+    c = braiins_metrics_cache.get(ip)
+    if c and now - c["at"] < (BRAIINS_METRICS_S if c["ok"] else BRAIINS_METRICS_RETRY_S):
+        return c
+    try:
+        c = dict(parse_braiins_metrics(http_text("http://%s:8081/metrics" % ip, timeout=2)), at=now, ok=True)
+    except Exception:
+        c = {"at": now, "ok": False, "psu_w": None, "psu_v": None}
+    braiins_metrics_cache[ip] = c
+    return c
+
+
 def poll_braiins(ip):
     summ = cgminer(ip, "summary")["SUMMARY"][0]
     pools = cgminer(ip, "pools").get("POOLS", [])
@@ -620,6 +659,9 @@ def poll_braiins(ip):
         host, port = hp[0], (hp[1] if len(hp) > 1 else "")
         user = active.get("User", "")
     fan_pcts = [f.get("Speed") for f in fans if f.get("Speed") is not None]
+    met = braiins_metrics(ip)
+    estimate = tuner.get("ApproximateMinerPowerConsumption")
+    measured = met.get("psu_w") if (met.get("psu_w") or 0) > 0 else None  # only some PSUs report it
     return {
         "kind": "braiins",
         "name": user.split(".", 1)[1] if "." in user else ip,
@@ -630,7 +672,10 @@ def poll_braiins(ip):
         "expected_ths": None,
         "temp": max((t.get("Chip") or 0 for t in temps), default=None),
         "temp2": max((t.get("Board") or 0 for t in temps), default=None),
-        "power": tuner.get("ApproximateMinerPowerConsumption"),
+        "power": measured or estimate,
+        "power_source": "psu" if measured else "estimate" if estimate else None,
+        "power_estimate": estimate,
+        "psu_v": met.get("psu_v"),
         "power_limit": tuner.get("PowerLimit"),
         "fan": sum(fan_pcts) / len(fan_pcts) if fan_pcts else None,
         "best": as_num(summ.get("Best Share")),

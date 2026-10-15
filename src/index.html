@@ -898,7 +898,7 @@ function renderMiners(s) {
         <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
         <td class="pool-tag">${esc(m.pool)}${m.on_fallback ? ' <span class="hot">(fallback)</span>' : ""}</td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}${seenLine}</td>
-        <td class="r num">${m.power ? Math.round(m.power) + " W" : "—"}${m.cost_day ? `<div class="msub">${esc(cur())}${m.cost_day.toFixed(2)}/day</div>` : ""}</td>
+        <td class="r num"${m.power_source === "psu" ? ` title="Measured by the power supply${m.power_estimate ? ` (Braiins estimates ${Math.round(m.power_estimate)} W)` : ""}${m.psu_v ? `, ${m.psu_v.toFixed(2)} V` : ""}"` : m.power_source === "estimate" ? ' title="Braiins OS estimate (this power supply doesn\'t report its watts)"' : ""}>${m.power ? Math.round(m.power) + " W" : "—"}${m.power_source === "psu" ? '<span class="faint" style="font-size:10px"> PSU</span>' : ""}${m.cost_day ? `<div class="msub">${esc(cur())}${m.cost_day.toFixed(2)}/day</div>` : ""}</td>
         <td class="r num hide-sm">${off ? "—" : jth}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
         <td class="r num hide-sm" title="${m.best_session != null ? "since restart / all-time" : "since restart"}">${best}</td>

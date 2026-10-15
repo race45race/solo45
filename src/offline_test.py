@@ -626,6 +626,23 @@ async def release_0137_tests():
 
 asyncio.run(release_0137_tests())
 
+# Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
+_m = server.parse_braiins_metrics(
+    '# HELP miner_power Metrics\nminer_power{socket="N/A",type="estimated"} 1953.4 1792096564103\n'
+    'miner_power{socket="N/A",type="psu"} 2115 1792096564103\n'
+    'shared_psu_voltage{type="feedback"} 12.8545 1792096564103\nshared_psu_voltage{type="setpoint"} 12.79 1792096564103\n')
+_m0 = server.parse_braiins_metrics('miner_power{socket="N/A",type="psu"} 0 1\n')
+_real_text = server.http_text
+server.http_text = lambda url, timeout=3: (_ for _ in ()).throw(OSError("no metrics page"))
+_fail = server.braiins_metrics("10.9.9.30", now=1000.0)
+server.http_text = lambda url, timeout=3: 'miner_power{socket="N/A",type="psu"} 2000 1\n'
+_cached = server.braiins_metrics("10.9.9.30", now=1100.0)  # a failure is retried only after 10 minutes
+_retried = server.braiins_metrics("10.9.9.30", now=1000.0 + server.BRAIINS_METRICS_RETRY_S + 1)
+server.http_text = _real_text
+check("Braiins metrics page: the PSU's measured watts and voltage, a missing page retried later",
+      _m == {"psu_w": 2115.0, "psu_v": 12.8545} and _m0["psu_w"] == 0.0 and not _fail["ok"] and not _cached["ok"]
+      and _retried["ok"] and _retried["psu_w"] == 2000.0, str((_m, _m0, _fail, _retried)))
+
 # the tuning report's voltage floor: learned from an error jump after a voltage drop, or marked by hand
 server.volt_floors.clear()
 _r = {"kind": "bitaxe", "name": "BitaxeV", "frequency": 575}
