@@ -626,6 +626,13 @@ async def release_0137_tests():
 
 asyncio.run(release_0137_tests())
 
+# chip errors in a Bitaxe's first 5 minutes (its start-up burst) don't count toward its error rate
+_e = [dict(asic_errors=c, uptime=u) for c, u in ((0, 30), (900, 120), (1064, 240), (1064, 320), (1070, 500))]
+for _i, _x in enumerate(_e):
+    server.track_error_rate("warm", _x, 5000.0 + (_x["uptime"]))
+check("chip errors: the start-up burst is left out of the error rate",
+      [x.get("errors_per_min") for x in _e] == [None, None, None, None, 2.0], str([x.get("errors_per_min") for x in _e]))
+
 # Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
 _m = server.parse_braiins_metrics(
     '# HELP miner_power Metrics\nminer_power{socket="N/A",type="estimated"} 1953.4 1792096564103\n'

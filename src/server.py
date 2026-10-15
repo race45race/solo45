@@ -948,6 +948,7 @@ def track_daily_best(ip, result, t):
 
 
 error_counts = {}  # ip -> deque of (time, the ASIC's running error count), last 15 minutes
+ERRORS_WARMUP_S = 300  # a Bitaxe's chip errors in its first 5 minutes are its start-up burst, not its real rate
 
 
 def track_error_rate(ip, result, t):
@@ -959,6 +960,11 @@ def track_error_rate(ip, result, t):
     hist = error_counts.setdefault(ip, collections.deque())
     if hist and count < hist[-1][1]:
         hist.clear()  # the miner restarted
+    up = result.get("uptime")
+    if up is not None and up < ERRORS_WARMUP_S:
+        hist.clear()  # still starting: the chips often throw a burst of errors while they ramp up
+        result["errors_per_min"] = None
+        return
     hist.append((t, count))
     while hist and hist[0][0] < t - 900:
         hist.popleft()

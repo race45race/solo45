@@ -952,7 +952,7 @@ function renderTuning(s) {
       <td class="r num">${m.frequency != null ? `${m.frequency} MHz` : "—"}<div class="msub">${m.core_mv != null ? m.core_mv + " mV" : ""}${vf ? ` · floor ${vf.mv}` : ""}</div></td>
       <td class="r num hide-sm">${m.power && m.ths ? (m.power / m.ths).toFixed(1) : "—"}</td>
       <td class="r num"><span class="${hot(m.temp, L.chip)}">${m.temp != null ? Math.round(m.temp) + "°" : "—"}</span> / <span class="${hot(m.temp2, L.vr)}">${m.temp2 != null ? Math.round(m.temp2) + "°" : "—"}</span></td>
-      <td class="r num">${m.errors_per_min != null ? m.errors_per_min + "/min" : '<span class="faint" title="Needs a few minutes of readings (or this firmware has no error counter)">—</span>'}</td>
+      <td class="r num">${m.errors_per_min != null ? m.errors_per_min + "/min" : '<span class="faint" title="Needs a few minutes of readings; errors in the first 5 minutes after a start are left out, since the chips often throw a burst of errors while they ramp up (or this firmware has no error counter)">—</span>'}</td>
       <td class="r num">${seen != null ? Math.round(seen * 100) + "%" : "—"}</td>
       <td style="white-space:normal;min-width:220px">${advice}</td></tr>`;
   }).join("");
