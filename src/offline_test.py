@@ -309,10 +309,10 @@ server.subscribers.add(stuck)
 for _ in range(25):
     server.broadcast("state", {"n": 1})
 check("a viewer that stops reading is dropped, not queued for forever", stuck not in server.subscribers and stuck.qsize() == 20)
-r1, r2, r3 = {"asic_errors": 100}, {"asic_errors": 160}, {"asic_errors": 5}
+r1, r2, r3 = {"asic_errors": 100, "uptime": 2000}, {"asic_errors": 160, "uptime": 2180}, {"asic_errors": 5, "uptime": 10}
 server.track_error_rate("test", r1, 1000.0)
 server.track_error_rate("test", r2, 1180.0)  # 60 more errors in 3 minutes
-server.track_error_rate("test", r3, 1200.0)  # the counter went down: the miner restarted
+server.track_error_rate("test", r3, 1200.0)  # uptime went down: the miner restarted
 check("tuning report: chip errors per minute", r1["errors_per_min"] is None and r2["errors_per_min"] == 20.0
       and r3["errors_per_min"] is None, "(%s %s %s)" % (r1.get("errors_per_min"), r2.get("errors_per_min"), r3.get("errors_per_min")))
 import urllib.error  # noqa: E402
@@ -637,19 +637,122 @@ check("chip errors: the start-up burst is left out of the error rate",
 server.tuning_history.clear()
 _tm = {"kind": "bitaxe", "name": "BitaxeH", "frequency": 575, "core_mv": 1275, "uptime": 3600, "errors_per_min": 1.5,
        "temp": 58.0, "temp2": 57.0, "fan": 64.0, "power": 24.2, "ths": 1.17, "ths_long": 1.16}
+import collections  # noqa: E402
+server.error_counts["h"] = collections.deque([(8100.0, 10), (9000.0, 12)])  # 10+ minutes of error data
 server.track_tuning("h", dict(_tm), 9000.0)
 server.track_tuning("h", dict(_tm), 9005.0)  # settled readings: the "before"
 _tm2 = dict(_tm, frequency=600, uptime=30, errors_per_min=None)
 server.track_tuning("h", _tm2, 9010.0)  # the change (and the restart)
 _ev = server.tuning_history[-1] if server.tuning_history else {}
+server.error_counts["h"] = collections.deque([(9010.0 + 400, 10), (9010.0 + 1200, 12)])
 server.track_tuning("h", dict(_tm2, uptime=1200, errors_per_min=0.5, temp=59.6), 9010.0 + 1200)  # too soon for "after"
+server.error_counts["h"] = collections.deque([(9010.0 + 2300, 0), (9010.0 + 2400, 0)])  # only 100 s of error data
+server.track_tuning("h", dict(_tm2, uptime=2500, errors_per_min=0.0, temp=59.6), 9010.0 + server.TUNE_AFTER_S - 1)
+server.track_tuning("h", dict(_tm2, uptime=2500, errors_per_min=0.0, temp=59.6), 9010.0 + server.TUNE_AFTER_S + 1)
+_short = _ev.get("after") is None  # an error rate from under 10 minutes of data doesn't count yet
+server.error_counts["h"] = collections.deque([(9010.0 + 1700, 0), (9010.0 + 2400, 0)])
 _early = _ev.get("after") is None
 server.track_tuning("h", dict(_tm2, uptime=2500, errors_per_min=0.5, temp=59.6, power=25.4), 9010.0 + server.TUNE_AFTER_S)
 _saved = server.load_json(server.TUNING_PATH, [])
 check("tuning history: a change is logged with its readings before and 40 minutes after",
       len(server.tuning_history) == 1 and _ev["from"] == {"freq": 575, "mv": 1275} and _ev["to"] == {"freq": 600, "mv": 1275}
-      and _ev["before"]["temp"] == 58.0 and _ev["before"]["err"] == 1.5 and _early and _ev["after"]["temp"] == 59.6
+      and _ev["before"]["temp"] == 58.0 and _ev["before"]["err"] == 1.5 and _early and _short and _ev["after"]["temp"] == 59.6
       and _ev["after"]["w"] == 25.4 and len(_saved) == 1 and _saved[0]["after"]["err"] == 0.5, str(_ev))
+
+# "after" waits for the pool's own count on a miner connected to Solo45 (up to 2 hours), and a miner changed
+# again before its "after" was taken gets its last settled readings instead
+server.tuning_history.clear()
+_w = {"name": "BitaxeS", "connected": 0.0, "hashrate_1h": 1.2e12}
+_old_workers = server.S["solo45"].get("workers")
+server.S["solo45"]["workers"] = [_w]
+_sm = {"kind": "bitaxe", "name": "BitaxeS", "frequency": 600, "core_mv": 1275, "uptime": 5000, "errors_per_min": 0.0,
+       "temp": 58.0, "temp2": 57.0, "fan": 64.0, "power": 25.0, "ths": 1.2, "ths_long": 1.2}
+server.error_counts["s"] = collections.deque([(50000.0, 0), (51000.0, 0)])
+server.track_tuning("s", dict(_sm), 51000.0)
+server.track_tuning("s", dict(_sm, frequency=625, uptime=30, errors_per_min=None), 51005.0)  # change; pool reconnects
+_w["connected"] = 51005.0 + 1000  # connected only 1500 s ago at the 40-minute mark: the pool's count isn't ready
+server.error_counts["s"] = collections.deque([(51005.0 + 1700, 0), (51005.0 + 2500, 0)])
+server.track_tuning("s", dict(_sm, frequency=625, uptime=2500), 51005.0 + 2500)
+_waits = server.tuning_history[-1]["after"] is None
+_w["connected"] = 51005.0  # now 2600 s connected: seen is known
+server.error_counts["s"] = collections.deque([(51005.0 + 1800, 0), (51005.0 + 2600, 0)])
+server.track_tuning("s", dict(_sm, frequency=625, uptime=2600), 51005.0 + 2600)
+_filled = (server.tuning_history[-1]["after"] or {}).get("seen") == 1.0
+server.tuning_history[-1]["after"] = None  # 2-hour cap: a miner that keeps reconnecting still gets its "after"
+_w["connected"] = 51005.0 + 7000
+server.error_counts["s"] = collections.deque([(51005.0 + 6400, 0), (51005.0 + 7200, 0)])
+server.track_tuning("s", dict(_sm, frequency=625, uptime=7200), 51005.0 + 7200)
+_capped = server.tuning_history[-1]["after"] is not None and server.tuning_history[-1]["after"]["seen"] is None
+# changed again before "after": the settled readings taken 45 minutes after the first change fill it
+server.tuning_history.clear(); server.tune_steady.pop("s", None); server.tune_seen.pop("s", None)
+_w["connected"] = 60000.0
+server.error_counts["s"] = collections.deque([(59000.0, 0), (60000.0, 0)])
+server.track_tuning("s", dict(_sm), 60000.0)
+server.track_tuning("s", dict(_sm, frequency=625, uptime=30, errors_per_min=None), 60005.0)
+_w["connected"] = 61000.0  # reconnected later: seen not ready when the settled readings are taken
+server.error_counts["s"] = collections.deque([(60005.0 + 1900, 0), (60005.0 + 2700, 0)])
+server.track_tuning("s", dict(_sm, frequency=625, uptime=2700, temp=60.1), 60005.0 + 2700)
+_still = server.tuning_history[-1]["after"] is None
+server.track_tuning("s", dict(_sm, frequency=650, uptime=30, errors_per_min=None), 60005.0 + 2705)
+_carried = (server.tuning_history[-2]["after"] or {}).get("temp") == 60.1 and len(server.tuning_history) == 2
+server.S["solo45"]["workers"] = _old_workers
+check("tuning history: 'after' waits for the pool's count, and a quick second change keeps the first one's readings",
+      _waits and _filled and _capped and _still and _carried, str((_waits, _filled, _capped, _still, _carried)))
+
+# chip error counter glitches: an empty or partial list is no reading; dips, gaps and a returning total don't read
+# as errors; real heavy errors, even uneven ones, still do; a real counter reset is picked up again
+_none = [server.asic_error_count(x) for x in ({"hashrateMonitor": {"asics": []}}, {}, {"hashrateMonitor": "x"},
+         {"hashrateMonitor": {"asics": 5}}, {"hashrateMonitor": {"asics": [{"total": 1.2}]}},
+         {"hashrateMonitor": {"asics": [{"errorCount": 5}, {"total": 1}]}}, {"hashrateMonitor": {"asics": ["x"]}})]
+_two = server.asic_error_count({"hashrateMonitor": {"asics": [{"errorCount": 5}, {"errorCount": 7}]}})
+
+
+def _run(key, seq, t0, step=5.0, up0=3000):
+    """Feed (count or None or ('gap', seconds)) readings 5 s apart with uptime rising; return the rates."""
+    server.restart_errors(key)
+    server.error_uptime.pop(key, None)
+    out, t, up = [], t0, up0
+    for c in seq:
+        if isinstance(c, tuple):  # no readings at all for a while (the miner didn't answer)
+            t += c[1]; up += c[1]
+            continue
+        r = {"asic_errors": c, "uptime": up}
+        server.track_error_rate(key, r, t)
+        out.append(r.get("errors_per_min"))
+        t += step; up += step
+    return out
+
+
+def _peak(rates):
+    vals = [x for x in rates if x is not None]
+    return max(vals) if vals else None
+
+
+_cases = {
+    "reconnect 0": _run("g1", [2253, 2253, 0, 2253] + [2253] * 30 + [2254], 20000.0),
+    "dashboard starts on a 0": _run("g2", [0, 2253] + [2253] * 30, 30000.0),
+    "0, then a 70 s gap": _run("g4", [2253] * 30 + [0, ("gap", 70)] + [2253] * 60, 50000.0),
+    "0, then back in steps": _run("g5", [2253] * 30 + [0, 1126, 2253] + [2253] * 60, 60000.0),
+    "small dip": _run("g6", [2253] * 30 + [2103, 2253] + [2253] * 60, 70000.0),
+    "zeros for 4 polls": _run("g7", [2253] * 30 + [0] * 4 + [2253] * 60, 80000.0),
+    "empty readings": _run("g8", [2253] * 30 + [None] * 3 + [2253] * 60, 90000.0),
+}
+_glitch_ok = all(_peak(v) is not None and _peak(v) <= 1.0 for v in _cases.values())
+_heavy = _run("g3", [1000 + 300 * i for i in range(40)], 40000.0)  # a really bad setting: 300 errors every 5 s
+_uneven = _run("g9", [1000 + sum((250, 150)[j % 2] for j in range(i)) for i in range(60)], 100000.0)
+_steppy = _run("g10", [1000 + sum((250, 0)[j % 2] for j in range(i)) for i in range(60)], 110000.0)
+_reset = _run("g11", [2253] * 30 + [i for i in range(0, 50)], 120000.0)  # counter really reset to 0, no reboot
+_stale = _run("g12", [2253] * 30 + [None] * 30, 130000.0)  # counters gone for 2.5 minutes
+_r = {"asic_errors": 50, "uptime": 40}  # a real restart (uptime went down) starts over, in warm-up
+server.track_error_rate("g3", _r, 40300.0)
+check("chip errors: counter glitches don't read as errors, real heavy errors still do",
+      _none == [None] * 7 and _two == 12 and _glitch_ok and _heavy[-1] and _heavy[-1] > 3000
+      and _uneven[-1] and 2200 < _uneven[-1] < 2600 and _steppy[-1] and 1300 < _steppy[-1] < 1700
+      and _reset[-1] is not None and 10 <= _reset[-1] <= 14 and _stale[-1] is None
+      and server.error_span("g12", 130000.0 + 5 * 60) == 0 and _r["errors_per_min"] is None
+      and not server.error_counts["g3"],
+      str((_none, _two, {k: _peak(v) for k, v in _cases.items()}, _heavy[-1], _uneven[-1], _steppy[-1], _reset[-1],
+           _stale[-1])))
 
 # Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
 _m = server.parse_braiins_metrics(

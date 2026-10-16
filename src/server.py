@@ -594,10 +594,22 @@ def poll_bitaxe(ip):
         "core_mv": i.get("coreVoltage"),
         "max_power": i.get("maxPower"),
         "err_pct": i.get("errorPercentage"),
-        "asic_errors": sum(a.get("errorCount", 0) for a in (i.get("hashrateMonitor") or {}).get("asics") or []
-                           ) if i.get("hashrateMonitor") else None,
+        "asic_errors": asic_error_count(i),
     }
 
+
+def asic_error_count(info):
+    """The Bitaxe's running chip error count, or None when it doesn't report a complete set of per-chip counters.
+    While it reconnects to its pool AxeOS can briefly report an empty or partial list, which must not read as a
+    lower count."""
+    mon = info.get("hashrateMonitor")
+    asics = mon.get("asics") if isinstance(mon, dict) else None
+    if not isinstance(asics, list) or not asics:
+        return None
+    counts = [a.get("errorCount") if isinstance(a, dict) else None for a in asics]
+    if any(isinstance(c, bool) or not isinstance(c, (int, float)) for c in counts):
+        return None
+    return sum(counts)
 
 BRAIINS_METRICS_S = 30  # how often to read a Braiins miner's metrics page (16 KB gzipped)
 BRAIINS_METRICS_RETRY_S = 600  # a miner without one (older Braiins OS) is asked again after this long
@@ -950,28 +962,70 @@ def track_daily_best(ip, result, t):
 
 error_counts = {}  # ip -> deque of (time, the ASIC's running error count), last 15 minutes
 ERRORS_WARMUP_S = 300  # a Bitaxe's chip errors in its first 5 minutes are its start-up burst, not its real rate
+ERRORS_JUMP = 200  # the first climb of a fresh count by more than this, within a minute, is the counter coming back
+ERRORS_LOW_S = 60  # a count below its peak for this long (no restart) is a real counter reset, not a glitch
+ERRORS_STALE_S = 120  # an error rate whose newest reading is older than this is no longer shown
+error_uptime = {}  # ip -> the miner's uptime at its last reading (a restart makes it go down)
+error_peak = {}  # ip -> the highest count in the current window (the counter only goes up between restarts)
+error_low_since = {}  # ip -> when the count first read below its peak
+error_fresh = {}  # ip -> True while the window has just (re)started and its count hasn't climbed yet
+
+
+def error_rate(hist, t):
+    """Chip errors per minute over the window (oldest readings past 15 minutes dropped), or None under 2 minutes."""
+    while hist and hist[0][0] < t - 900:
+        hist.popleft()
+    span = hist[-1][0] - hist[0][0] if hist else 0
+    return round((hist[-1][1] - hist[0][1]) / span * 60, 1) if span >= 120 else None
+
+
+def restart_errors(ip):
+    """Start a miner's error window over (lock held)."""
+    error_counts.setdefault(ip, collections.deque()).clear()
+    error_peak.pop(ip, None)
+    error_low_since.pop(ip, None)
+    error_fresh[ip] = True
 
 
 def track_error_rate(ip, result, t):
     """Chip errors per minute over the last ~15 minutes, from the counter the Bitaxe reports (lock held). The
-    counter runs since the miner started, so its total says little; how fast it climbs is what matters."""
-    count = result.get("asic_errors")
-    if count is None:
-        return
+    counter runs since the miner started, so its total says little; how fast it climbs is what matters.
+
+    Left out on purpose: the first 5 minutes after a start (the chips' start-up burst), readings below the count
+    already reached without a restart (AxeOS can briefly report a zeroed or partial count while it reconnects to
+    its pool; only if it stays low for a minute is it a real reset), and the first big climb of a freshly started
+    count (the counter coming back to its real total after such a glitch)."""
     hist = error_counts.setdefault(ip, collections.deque())
-    if hist and count < hist[-1][1]:
-        hist.clear()  # the miner restarted
-    up = result.get("uptime")
-    if up is not None and up < ERRORS_WARMUP_S:
-        hist.clear()  # still starting: the chips often throw a burst of errors while they ramp up
+    up, last_up = result.get("uptime"), error_uptime.get(ip)
+    if up is not None:
+        error_uptime[ip] = up
+    if up is not None and ((last_up is not None and up < last_up) or up < ERRORS_WARMUP_S):
+        restart_errors(ip)  # restarted, or still starting: the chips often throw a burst of errors while they ramp up
         result["errors_per_min"] = None
         return
+    count = result.get("asic_errors")
+    if count is None:  # no complete per-chip counters in this reading
+        if not hist or t - hist[-1][0] > ERRORS_STALE_S:
+            result["errors_per_min"] = None  # don't keep showing an old rate
+        return
+    peak = error_peak.get(ip)
+    if peak is not None and count < peak:
+        since = error_low_since.setdefault(ip, t)
+        if t - since < ERRORS_LOW_S:
+            result["errors_per_min"] = error_rate(hist, t)  # a glitch: skip this reading
+            return
+        restart_errors(ip)  # still low after a minute: the counter really was reset
+        peak = None
+    error_low_since.pop(ip, None)
+    if not hist:
+        error_fresh[ip] = True
+    elif count > hist[-1][1]:
+        if error_fresh.get(ip) and count - hist[-1][1] > ERRORS_JUMP and t - hist[-1][0] < 60:
+            hist.clear()  # far more than a chip makes in seconds: the counter coming back, so count from here
+        error_fresh[ip] = False
     hist.append((t, count))
-    while hist and hist[0][0] < t - 900:
-        hist.popleft()
-    span = hist[-1][0] - hist[0][0]
-    result["errors_per_min"] = round((hist[-1][1] - hist[0][1]) / span * 60, 1) if span >= 120 else None
-
+    error_peak[ip] = count if peak is None or count > peak else peak
+    result["errors_per_min"] = error_rate(hist, t)
 
 def as_floor_map(floors):
     """{name: {"<freq>": floor}}; a saved file from v0.1.37 held one floor per miner ({name: floor})."""
@@ -1059,6 +1113,22 @@ def tune_readings(m, now):
             "w": r(m.get("power")), "ths": r(ref, 3), "err": m.get("errors_per_min"), "seen": seen}
 
 
+TUNE_ERR_SPAN_S = 600  # readings need at least 10 minutes of chip-error data behind them
+TUNE_WAIT_SEEN_S = 7200  # "after" waits up to 2 hours for the pool's own count of a miner on Solo45
+
+
+def error_span(ip, now):
+    """How many seconds of chip-error readings the miner's current error rate is based on (0 when stale)."""
+    hist = error_counts.get(ip)
+    if not hist or len(hist) < 2 or now - hist[-1][0] > ERRORS_STALE_S:
+        return 0
+    return hist[-1][0] - hist[0][0]
+
+
+def on_solo45(name):
+    return any(w.get("name") == name for w in S["solo45"].get("workers") or [])
+
+
 def track_tuning(ip, m, t):
     """Keep a history of each Bitaxe's frequency/voltage changes (lock held, after the poll's result is in m):
     the settled readings just before a change, and the readings 40 minutes after it if the setting held."""
@@ -1071,18 +1141,26 @@ def track_tuning(ip, m, t):
     tune_seen[ip] = (name, freq, mv)
     if prev and prev[0] == name and (prev[1], prev[2]) != (freq, mv):
         before = tune_steady.pop(ip, None)
+        earlier = next((e for e in reversed(tuning_history) if e.get("name") == name), None)
+        if (earlier and earlier.get("after") is None and before and before["at"] - earlier["at"] >= TUNE_AFTER_S
+                and (earlier["to"]["freq"], earlier["to"]["mv"]) == (prev[1], prev[2])):
+            earlier["after"] = before  # changed again before its "after" was taken: the last settled readings
         tuning_history.append({"name": name, "at": int(t), "from": {"freq": prev[1], "mv": prev[2]},
                                "to": {"freq": freq, "mv": mv},
                                "before": before if before and t - before["at"] < 7200 else None, "after": None})
         del tuning_history[:-TUNE_KEEP]
         changed = True
-    elif (m.get("uptime") or 0) >= TUNE_STEADY_S and m.get("errors_per_min") is not None:
+    elif ((m.get("uptime") or 0) >= TUNE_STEADY_S and m.get("errors_per_min") is not None
+          and error_span(ip, t) >= TUNE_ERR_SPAN_S):
         tune_steady[ip] = tune_readings(m, t)
     last = next((e for e in reversed(tuning_history) if e.get("name") == name), None)
     if (last and last.get("after") is None and t - last["at"] >= TUNE_AFTER_S and m.get("errors_per_min") is not None
-            and (last["to"]["freq"], last["to"]["mv"]) == (freq, mv)):
-        last["after"] = tune_readings(m, t)
-        changed = True
+            and error_span(ip, t) >= TUNE_ERR_SPAN_S and (last["to"]["freq"], last["to"]["mv"]) == (freq, mv)):
+        after = tune_readings(m, t)
+        # on Solo45, wait for its own count of the work (a miner must be connected 30 minutes), up to 2 hours
+        if after["seen"] is not None or not on_solo45(name) or t - last["at"] >= TUNE_WAIT_SEEN_S:
+            last["after"] = after
+            changed = True
     if changed:
         save_json(TUNING_PATH, tuning_history)
 

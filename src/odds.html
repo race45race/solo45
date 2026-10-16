@@ -205,7 +205,7 @@ function render() {
     [reward ? reward.toFixed(3) + " BTC" : "—", "block reward right now (new coins + fees)"],
     [exp ? fmtYears(exp) : "—", "average wait at this hashrate"],
     [cost ? cur + cost.toFixed(2) : "—", "electricity per day for the fleet"],
-    [day && reward ? (day * reward * 1e8).toFixed(0) + " sats" : "—", "the block reward × today's chance: what a day is worth on average"],
+    [day && reward ? Math.round(day * reward * 1e8).toLocaleString() + " sats" : "—", "the block reward × today's chance: what a day is worth on average"],
   ].map(([v, t]) => `<div class="fact"><div class="v num">${v}</div><div class="t">${esc(t)}</div></div>`).join("");
 }
 
