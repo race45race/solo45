@@ -269,7 +269,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <div class="sub" id="kEff"></div>
     </div>
     <div class="card kpi">
-      <div class="label">Chance of a block today</div>
+      <div class="label">Chance of a block today <a href="odds" style="color:var(--solo45);text-decoration:none;font-size:12px" title="Your fleet's odds, said many ways">🎲 more</a></div>
       <div class="value num" id="kOdds">—</div>
       <div class="sub" id="kOddsYear"></div>
     </div>
@@ -329,6 +329,16 @@ body.privacy .sensitive { filter: blur(6px); }
         </tr></thead>
         <tbody id="tuneRows"></tbody>
       </table>
+    </div>
+    <div id="tuneHistWrap" style="display:none;margin-top:16px">
+      <h2 style="font-size:14px">Tuning history <span class="muted">each speed or voltage change: settled readings before, 40 minutes after, and now</span></h2>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th class="first">When</th><th>Miner</th><th>Change</th><th>Before</th><th>40 min after</th><th>Now</th></tr></thead>
+          <tbody id="tuneHistRows"></tbody>
+        </table>
+      </div>
+      <div class="ai-foot" style="margin:6px 0 0">Each cell: chip / power stage °C · fan · watts · chip errors a minute · how much of its work Solo45 saw. "Now" shows on a miner's latest change while that setting is in use. <a href="#" id="tuneHistMore" style="color:var(--solo45)"></a></div>
     </div>
     <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. When a lower voltage makes a miner's errors jump, the report remembers the last good voltage as its floor and won't suggest going below it; you can also set or forget a floor with the button. Braiins OS miners tune themselves.</div>
   </section>
@@ -681,6 +691,7 @@ function poolColor(name) {
 // ---- rendering
 function render(s) {
   if (!s.history && state && state.history) s.history = state.history;  // chart data arrives every 30 s
+  if (!s.tuning && state && state.tuning) s.tuning = state.tuning;  // so does the tuning history
   state = s;
   syncTimezone(s);
   const T = s.totals, tip = s.tip;
@@ -718,6 +729,7 @@ function render(s) {
   renderBlock(s);
   renderMiners(s);
   renderTuning(s);
+  renderTuneHistory(s);
   renderBlocks(s);
   renderSolo(s);
   renderPolicy(s);
@@ -967,6 +979,41 @@ $("tuneRows").addEventListener("click", e => {
     .then(r => r.json()).then(r => { if (r.error) { alert(r.error); b.disabled = false; } })
     .catch(() => { b.disabled = false; });
 });
+
+// ---- tuning history: each Bitaxe change with its readings before, 40 minutes after, and now
+let tuneHistAll = false, tuneHistHtml = "";
+function tuneHistCell(x) {
+  if (!x) return '<span class="faint">—</span>';
+  const n = (v, u) => v != null ? v + u : "—";
+  return `<span class="num">${n(x.temp != null ? Math.round(x.temp) : null, "°")} / ${n(x.vr != null ? Math.round(x.vr) : null, "°")} · fan ${n(x.fan, "%")}</span>`
+    + `<div class="msub">${n(x.w, " W")} · ${x.err != null ? x.err + " err/min" : "err —"}${x.seen != null ? ` · sees ${Math.round(x.seen * 100)}%` : ""}</div>`;
+}
+function renderTuneHistory(s) {
+  const ev = (s.tuning || []).slice().reverse();
+  $("tuneHistWrap").style.display = ev.length ? "" : "none";
+  if (!ev.length) return;
+  const live = {}, latest = {};
+  for (const m of s.miners || []) live[m.name] = m;
+  for (const e of ev) if (!(e.name in latest)) latest[e.name] = e;
+  const now = (e) => {
+    const m = live[e.name];
+    if (latest[e.name] !== e || !m || m.frequency !== e.to.freq || m.core_mv !== e.to.mv || m.status === "offline") return null;
+    const ref = m.ths_long || m.ths;
+    return {temp: m.temp, vr: m.temp2, fan: m.fan != null ? Math.round(m.fan) : null, w: m.power != null ? Math.round(m.power * 10) / 10 : null,
+            err: m.errors_per_min, seen: m.pool_ths != null && ref ? m.pool_ths / ref : null};
+  };
+  const shown = tuneHistAll ? ev : ev.slice(0, 10);
+  const html = shown.map(e => {
+    const when = new Date(e.at * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
+    const ch = e.from.mv === e.to.mv ? `${e.from.freq} → <b>${e.to.freq}</b> MHz<div class="msub">${e.to.mv} mV</div>`
+      : `${e.from.freq} → <b>${e.to.freq}</b> MHz<div class="msub">${e.from.mv} → <b>${e.to.mv}</b> mV</div>`;
+    return `<tr><td class="first num">${esc(when)}</td><td><div class="mname">${esc(e.name)}</div></td><td class="num">${ch}</td>`
+      + `<td>${tuneHistCell(e.before)}</td><td>${tuneHistCell(e.after)}</td><td>${tuneHistCell(now(e))}</td></tr>`;
+  }).join("");
+  if (html !== tuneHistHtml) { tuneHistHtml = html; $("tuneHistRows").innerHTML = html; }
+  $("tuneHistMore").textContent = ev.length > 10 ? (tuneHistAll ? "Show the latest 10" : `Show all ${ev.length}`) : "";
+}
+$("tuneHistMore").addEventListener("click", e => { e.preventDefault(); tuneHistAll = !tuneHistAll; tuneHistHtml = ""; if (state) renderTuneHistory(state); });
 
 function renderSolo(s) {
   const so = s.solo45 || {};

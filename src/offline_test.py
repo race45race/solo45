@@ -633,6 +633,24 @@ for _i, _x in enumerate(_e):
 check("chip errors: the start-up burst is left out of the error rate",
       [x.get("errors_per_min") for x in _e] == [None, None, None, None, 2.0], str([x.get("errors_per_min") for x in _e]))
 
+# tuning history: a Bitaxe's change is logged with its settled readings before and 40 minutes after
+server.tuning_history.clear()
+_tm = {"kind": "bitaxe", "name": "BitaxeH", "frequency": 575, "core_mv": 1275, "uptime": 3600, "errors_per_min": 1.5,
+       "temp": 58.0, "temp2": 57.0, "fan": 64.0, "power": 24.2, "ths": 1.17, "ths_long": 1.16}
+server.track_tuning("h", dict(_tm), 9000.0)
+server.track_tuning("h", dict(_tm), 9005.0)  # settled readings: the "before"
+_tm2 = dict(_tm, frequency=600, uptime=30, errors_per_min=None)
+server.track_tuning("h", _tm2, 9010.0)  # the change (and the restart)
+_ev = server.tuning_history[-1] if server.tuning_history else {}
+server.track_tuning("h", dict(_tm2, uptime=1200, errors_per_min=0.5, temp=59.6), 9010.0 + 1200)  # too soon for "after"
+_early = _ev.get("after") is None
+server.track_tuning("h", dict(_tm2, uptime=2500, errors_per_min=0.5, temp=59.6, power=25.4), 9010.0 + server.TUNE_AFTER_S)
+_saved = server.load_json(server.TUNING_PATH, [])
+check("tuning history: a change is logged with its readings before and 40 minutes after",
+      len(server.tuning_history) == 1 and _ev["from"] == {"freq": 575, "mv": 1275} and _ev["to"] == {"freq": 600, "mv": 1275}
+      and _ev["before"]["temp"] == 58.0 and _ev["before"]["err"] == 1.5 and _early and _ev["after"]["temp"] == 59.6
+      and _ev["after"]["w"] == 25.4 and len(_saved) == 1 and _saved[0]["after"]["err"] == 0.5, str(_ev))
+
 # Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
 _m = server.parse_braiins_metrics(
     '# HELP miner_power Metrics\nminer_power{socket="N/A",type="estimated"} 1953.4 1792096564103\n'

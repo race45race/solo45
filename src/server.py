@@ -44,6 +44,7 @@ WORK_PATH = os.path.join(DATA, "work.json")
 KNOWN_PATH = os.path.join(DATA, "known_miners.json")
 TEMPS_PATH = os.path.join(DATA, "temps.json")
 VOLT_PATH = os.path.join(DATA, "volt_floors.json")  # each Bitaxe's known lowest safe core voltage
+TUNING_PATH = os.path.join(DATA, "tuning_history.json")  # each Bitaxe's speed/voltage changes, before and after
 NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
 
 CFG = {
@@ -1035,6 +1036,57 @@ def track_volt_floor(ip, result, t):
     result["volt_floor"] = floor_for(name, freq)
 
 
+tuning_history = load_json(TUNING_PATH, [])  # [{"name", "at", "from": {freq, mv}, "to": {...}, "before", "after"}]
+tune_seen = {}  # ip -> (name, freq, mv): the setting last seen
+tune_steady = {}  # ip -> readings on the current setting once settled: the "before" of the next change
+TUNE_STEADY_S = 900  # a miner counts as settled 15 minutes after it starts, with an error rate known
+TUNE_AFTER_S = 2400  # "after" is read 40 minutes after a change: the pool's own count needs 30 minutes connected
+TUNE_KEEP = 300
+
+
+def tune_readings(m, now):
+    """A Bitaxe's readings for the tuning history (lock held): chip/VR temperature, fan, watts, hashrate, chip
+    errors a minute and the share of its work Solo45 counted over the last hour."""
+    seen = None
+    ref = m.get("ths_long") or m.get("ths")
+    for w in S["solo45"].get("workers") or []:
+        if w.get("name") == m.get("name") and now - w.get("connected", now) > 1800 and ref:
+            seen = round(w.get("hashrate_1h", 0) / 1e12 / ref, 3)
+
+    def r(v, n=1):
+        return round(v, n) if isinstance(v, (int, float)) else None
+    return {"at": int(now), "temp": r(m.get("temp")), "vr": r(m.get("temp2")), "fan": r(m.get("fan"), 0),
+            "w": r(m.get("power")), "ths": r(ref, 3), "err": m.get("errors_per_min"), "seen": seen}
+
+
+def track_tuning(ip, m, t):
+    """Keep a history of each Bitaxe's frequency/voltage changes (lock held, after the poll's result is in m):
+    the settled readings just before a change, and the readings 40 minutes after it if the setting held."""
+    if m.get("kind") != "bitaxe":
+        return
+    name, freq, mv = m.get("name"), m.get("frequency"), m.get("core_mv")
+    if not name or freq is None or mv is None:
+        return
+    prev, changed = tune_seen.get(ip), False
+    tune_seen[ip] = (name, freq, mv)
+    if prev and prev[0] == name and (prev[1], prev[2]) != (freq, mv):
+        before = tune_steady.pop(ip, None)
+        tuning_history.append({"name": name, "at": int(t), "from": {"freq": prev[1], "mv": prev[2]},
+                               "to": {"freq": freq, "mv": mv},
+                               "before": before if before and t - before["at"] < 7200 else None, "after": None})
+        del tuning_history[:-TUNE_KEEP]
+        changed = True
+    elif (m.get("uptime") or 0) >= TUNE_STEADY_S and m.get("errors_per_min") is not None:
+        tune_steady[ip] = tune_readings(m, t)
+    last = next((e for e in reversed(tuning_history) if e.get("name") == name), None)
+    if (last and last.get("after") is None and t - last["at"] >= TUNE_AFTER_S and m.get("errors_per_min") is not None
+            and (last["to"]["freq"], last["to"]["mv"]) == (freq, mv)):
+        last["after"] = tune_readings(m, t)
+        changed = True
+    if changed:
+        save_json(TUNING_PATH, tuning_history)
+
+
 def set_volt_floor(data):
     """The tuning report's buttons: mark a Bitaxe's current voltage as its floor at its current frequency, or
     forget the floor in effect (the one at "freq" when the page names it). Floors at other frequencies stay."""
@@ -1104,6 +1156,7 @@ def record(ip, result, err):
             track_volt_floor(ip, result, t)
             m.update(result)
             m["fails"], m["ok"], m["last_ok"], m["error"] = 0, True, t, None
+            track_tuning(ip, m, t)
             if result.get("netdiff"):
                 S["netdiff"] = result["netdiff"]
             if result.get("reward_sats"):
@@ -1348,6 +1401,7 @@ def snapshot():
             "solo45": S["solo45"],
             "best_today": best_today(),
             "best_history": S["best_history"][-30:],
+            "tuning": tuning_history[-60:],
             "work": work_summary(nd),
             "node": S["node"],
             "switch": switch_stats(),
@@ -1608,6 +1662,7 @@ def state_push_loop():
             snap = snapshot()
             if n % 15:  # the 24 h chart data only changes every 30 s, and it's most of the size
                 snap.pop("history", None)
+                snap.pop("tuning", None)  # changes rarely; sent with the chart data
             broadcast("state", snap)
 
 
@@ -1965,6 +2020,9 @@ class Handler(BaseHTTPRequestHandler):
         # login only (the home-screen widget's four numbers stay open, umbrelOS fetches those itself)
         if path in PRIVATE_READS and not self.from_proxy("a read of " + path):
             return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
+        if path in ("/odds", "/odds.html"):
+            with open(os.path.join(BASE, "odds.html"), "rb") as f:
+                return self.send(200, f.read(), "text/html; charset=utf-8")
         if path in ("/", "/index.html"):
             with open(INDEX, "rb") as f:
                 self.send(200, f.read(), "text/html; charset=utf-8")
