@@ -33,8 +33,12 @@ USAGE_PATH = os.path.join(DATA, "ai_usage.json")
 REPORTS_PATH = os.path.join(DATA, "ai_reports.json")
 
 # USD per million tokens (input, output). Cache writes cost 1.25x input, cache reads 0.1x.
+# Older models stay listed: a saved choice, or a server-side fallback, can still answer with one of them.
 PRICES = {
     "claude-fable-5-1": (10.0, 50.0),
+    "claude-opus-5-5": (4.0, 20.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-haiku-5-5": (0.10, 0.50),  # prompts up to 100K tokens (ours are far smaller)
     "claude-opus-5": (5.0, 25.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5": (2.0, 10.0),
@@ -42,12 +46,20 @@ PRICES = {
 }
 # The models offered on the dashboard, cheapest first: (id, name, rough cost of one question).
 MODELS = [
-    ("claude-haiku-4-5", "Claude Haiku 4.5 - cheapest, simpler answers", "about 3¢"),
-    ("claude-sonnet-5", "Claude Sonnet 5 - good balance", "about 5¢"),
-    ("claude-opus-5", "Claude Opus 5 - recommended", "about 13¢"),
+    ("claude-haiku-5-5", "Claude Haiku 5.5 - cheapest, simpler answers", "under 1¢"),
+    ("claude-sonnet-5-5", "Claude Sonnet 5.5 - good balance", "about 5¢"),
+    ("claude-opus-5-5", "Claude Opus 5.5 - recommended", "about 10¢"),
     ("claude-fable-5-1", "Claude Fable 5.1 - most capable", "about 26¢"),
 ]
-FALLBACK_MODELS = ("claude-opus-5", "claude-fable-5-1")  # models that take the server-side refusal fallback
+# A saved choice that is no longer on the menu moves to its successor (same tier, same or lower price).
+SUCCESSORS = {"claude-opus-5": "claude-opus-5-5", "claude-sonnet-5": "claude-sonnet-5-5",
+              "claude-haiku-4-5": "claude-haiku-5-5"}
+# models that take the server-side refusal fallback ("default" mode)
+FALLBACK_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-opus-5")
+
+
+def current_model(model):
+    return SUCCESSORS.get(model, model)
 MAX_TOOL_ROUNDS = 8
 
 LOGS = {
@@ -217,7 +229,7 @@ class Assistant:
         return min(week, month)
 
     def record_cost(self, usage, model, kind):
-        p_in, p_out = PRICES.get(model, PRICES["claude-opus-5"])
+        p_in, p_out = PRICES.get(model, PRICES["claude-opus-5-5"])
         cost = (usage.input_tokens * p_in
                 + (usage.cache_creation_input_tokens or 0) * p_in * 1.25
                 + (usage.cache_read_input_tokens or 0) * p_in * 0.1
@@ -233,7 +245,7 @@ class Assistant:
         return {
             "enabled": bool(self.api_key()),
             "key_hint": self.key_hint(),
-            "model": self.cfg["model"],
+            "model": current_model(self.cfg["model"]),
             "models": [{"id": m, "name": n, "per_question": q} for m, n, q in MODELS],
             "spent_week": round(self.spent(7), 4),
             "spent_month": round(self.spent(30), 4),
@@ -308,7 +320,7 @@ class Assistant:
                 messages.append({"role": "assistant", "content": str(turn["a"])[:8000]})
         messages.append({"role": "user", "content": self.context() + "\n\n" + str(question)[:4000]})
 
-        proposals, cost, model = [], 0.0, self.cfg["model"]
+        proposals, cost, model = [], 0.0, current_model(self.cfg["model"])
         try:
             for _ in range(MAX_TOOL_ROUNDS):
                 if self.budget_left() <= 0:

@@ -69,7 +69,7 @@ CFG = {
     "kwh_price": 0.12,  # price per kWh for the electricity cost figures; set on the dashboard
     "currency": "$",    # symbol shown with costs
     "timezone": "",     # the user's time zone, taken from their browser, e.g. America/Chicago ("" = the server's)
-    "ai": {"model": "claude-opus-5", "weekly_cap_usd": 2.0, "monthly_cap_usd": 8.0, "report_hour": 8,
+    "ai": {"model": "claude-opus-5-5", "weekly_cap_usd": 2.0, "monthly_cap_usd": 8.0, "report_hour": 8,
            "report_every_days": 3},
     # phone alerts through ntfy (https://ntfy.sh or your own server); off until the user turns them on
     "notify": {"on": False, "server": "https://ntfy.sh", "topic": "", "after_min": 10, "click": "",
@@ -1650,6 +1650,7 @@ def save_ai_settings(data):
     """Model, spending caps and report schedule for the AI assistant."""
     new = {}
     if "model" in data:
+        data["model"] = ai.current_model(data["model"])  # e.g. an older backup naming a retired menu choice
         if data["model"] not in [m for m, _, _ in ai.MODELS]:
             return 400, {"error": "unknown model"}
         new["model"] = data["model"]

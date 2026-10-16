@@ -774,6 +774,19 @@ check("chip domains: a domain stuck at 0 for 10 minutes is flagged, not during w
       _doms_ok and _seq[100] == 0 and _seq[-1] == 2 and _r2["dead_domains"] == 0 and _r3["dead_domains"] == 0
       and _st == ("warn", "2 of 4 chip domains stopped"), str((_doms_ok, _seq[100], _seq[-1], _r2.get("dead_domains"), _st)))
 
+# AI model menu: every offered model is priced, retired choices map to an offered successor
+try:
+    import ai as _ai  # noqa: E402
+except ImportError:
+    _ai = None
+    print("SKIP  AI models (the anthropic library isn't installed here; checked inside the image)")
+if _ai:
+    _ids = [m for m, _, _ in _ai.MODELS]
+    check("AI models: the menu is priced, retired choices move to a current model",
+          all(m in _ai.PRICES for m in _ids) and all(s in _ids for s in _ai.SUCCESSORS.values())
+          and _ai.current_model("claude-opus-5") == "claude-opus-5-5" and _ai.current_model("claude-fable-5-1") == "claude-fable-5-1"
+          and _ai.current_model(server.CFG["ai"]["model"]) in _ids, str(_ids))
+
 # Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
 _m = server.parse_braiins_metrics(
     '# HELP miner_power Metrics\nminer_power{socket="N/A",type="estimated"} 1953.4 1792096564103\n'
