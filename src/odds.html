@@ -35,6 +35,7 @@ header a:hover { color: var(--text); }
 .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .muted { color: var(--muted); }
 .grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 12px; margin-bottom: 12px; align-items: start; }
+.col { display: grid; gap: 12px; align-content: start; min-width: 0; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; min-width: 0; }
 .card h2 { font-size: 15px; margin: 0 0 4px; font-weight: 650; }
 .card .note { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
@@ -73,30 +74,31 @@ header a:hover { color: var(--text); }
   <header><h1>🎲 Block odds</h1><span class="muted" id="upd"></span><a href="./">← Back to the dashboard</a></header>
 
   <div class="grid">
+   <div class="col">
     <section class="card hero">
       <h2>Chance your fleet finds a block today</h2>
       <div class="big num" id="today">—</div>
       <div class="sub" id="todaySub">—</div>
     </section>
     <section class="card">
-      <h2>…and over longer stretches</h2>
-      <p class="note">At today's hashrate and difficulty. Every hash is a fresh try: past days don't count against you.</p>
-      <div class="bars" id="horizons"></div>
-    </section>
-  </div>
-
-  <div class="grid">
-    <section class="card">
       <h2>Hashes tried since you opened this page</h2>
       <p class="note">Every hash is a lottery ticket. One needs to land below the network's target.</p>
       <div class="counter num" id="counter">0</div>
       <div class="muted" id="perHash">—</div>
+    </section>
+   </div>
+   <div class="col">
+    <section class="card">
+      <h2>…and over longer stretches</h2>
+      <p class="note">At today's hashrate and difficulty. Every hash is a fresh try: past days don't count against you.</p>
+      <div class="bars" id="horizons"></div>
     </section>
     <section class="card">
       <h2>How lucky is that, really?</h2>
       <p class="note">Today's chance of a block, said other ways.</p>
       <div class="facts" id="facts"></div>
     </section>
+   </div>
   </div>
 
   <section class="card wide">
@@ -175,7 +177,7 @@ function render() {
   if (day) {
     const heads = Math.log2(1 / day), sixes = Math.log(1 / day) / Math.log(6);
     const vsPb = day * POWERBALL, people = 10000 * day;
-    const after = st.node && st.node.adj_change_pct != null ? 1 - Math.exp(-86400 / (exp * (1 + st.node.adj_change_pct / 100))) : null;
+    const after = st.node && st.node.adj_change_pct != null && (st.node.adj_blocks_done || 0) >= 200 ? 1 - Math.exp(-86400 / (exp * (1 + st.node.adj_change_pct / 100))) : null;
     $("facts").innerHTML = [
       [`${heads.toFixed(1)} heads`, "in a row from a fair coin: about as likely as a block today"],
       [`${sixes.toFixed(1)} sixes`, "in a row from a die, the same odds again"],

@@ -940,6 +940,7 @@ function tuneAdvice(m, seen) {
   if (fl && m.core_mv != null && m.core_mv < fl.mv) out.push(["warn", `Below its voltage floor: raise it to ${fl.mv} mV (${fl.why === "auto" ? `errors jumped at ${fl.tried_mv || "a lower"} mV` : "marked as its floor"} at ${fl.freq} MHz)`]);
   if (vr != null && vr >= L.vr - 3) out.push(["warn", `Power stage ${Math.round(vr)}°C, near its ${L.vr}°C limit: lower the frequency 25 MHz, or raise the minimum fan speed`]);
   if (chip != null && chip >= L.chip - 2 && (m.fan || 0) >= 95) out.push(["warn", "Chip near its limit with the fan maxed: lower the frequency 25 MHz"]);
+  else if ((m.fan || 0) >= 95 && m.asic === "BM1370") out.push(["warn", `Fan at ${Math.round(m.fan)}% to hold this speed: no cooling headroom for warmer days. Consider −25 MHz`]);
   if (err != null && err >= 30) out.push(["warn", `${err} chip errors a minute: try +25 mV, or −25 MHz`]);
   if (seen != null && seen < 0.85 && (m.uptime || 0) > 7200) out.push(["warn", "The pool counts under 85% of the expected work for the last hour: try +25 mV, or −25 MHz"]);
   if (!out.length && err != null && err < 5 && vr != null && vr < L.vr - 15 && m.asic === "BM1370" && m.core_mv >= 1200 && m.frequency <= 575)
@@ -1403,17 +1404,20 @@ function renderWork(s) {
 }
 
 // ---- network & node
+const ADJ_MIN_BLOCKS = 200;  // the next-difficulty estimate needs this many blocks of the current period
 function renderNode(s) {
   const n = s.node || {}, so = s.solo45 || {};
   if (!n.ok) { $("nodeStats").innerHTML = `<span class="faint">${n.error ? "Can't reach your node: " + esc(n.error) : "Asking your node…"}</span>`; return; }
   const days = sec => sec >= 2 * 86400 ? (sec / 86400).toFixed(sec >= 30 * 86400 ? 0 : 1) + " days" : fmtDur(sec);
   const stat = (label, v, sub) => `<div class="stat"><div class="label">${label}</div><div class="v num">${v}</div><div class="s">${sub || ""}</div></div>`;
-  const chg = n.adj_change_pct;
+  const early = (n.adj_blocks_done || 0) < ADJ_MIN_BLOCKS;  // a few blocks into a period, the estimate is noise
+  const chg = early ? null : n.adj_change_pct;
   $("nodeStats").innerHTML =
       stat("Your node", n.synced ? `<span style="color:var(--ok)">✓ synced</span>` : `<span class="hot">syncing</span>`,
            `block ${n.height.toLocaleString()} · ${n.peers_in} in / ${n.peers_out} out peers`)
     + stat("Next difficulty change", chg == null ? "—" : `<span style="color:${chg < 0 ? "var(--ok)" : "var(--warn)"}">${chg > 0 ? "+" : ""}${chg.toFixed(1)}%</span>`,
-           `in ${n.adj_blocks_left.toLocaleString()} blocks (~${days(n.adj_eta_s)}) · blocks averaging ${n.adj_avg_min.toFixed(2)} min${chg < 0 ? " · easier for you" : ""}`)
+           early ? `in ${n.adj_blocks_left.toLocaleString()} blocks · estimate after ${ADJ_MIN_BLOCKS} blocks of the period (${n.adj_blocks_done || 0} so far)`
+                 : `in ${n.adj_blocks_left.toLocaleString()} blocks (~${days(n.adj_eta_s)}) · blocks averaging ${n.adj_avg_min.toFixed(2)} min${chg < 0 ? " · easier for you" : ""}`)
     + stat("Next block (Solo45 template)", so.reward ? (so.reward / 1e8).toFixed(4) + " BTC" : "—",
            so.reward ? `${n.subsidy_now} BTC subsidy + ${(so.fees / 1e8).toFixed(4)} fees · ${so.txs} transactions` : "")
     + stat("Mempool", `${n.mempool_tx.toLocaleString()} tx`,
