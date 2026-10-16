@@ -754,6 +754,26 @@ check("chip errors: counter glitches don't read as errors, real heavy errors sti
       str((_none, _two, {k: _peak(v) for k, v in _cases.items()}, _heavy[-1], _uneven[-1], _steppy[-1], _reset[-1],
            _stale[-1])))
 
+# chip domains: one stuck at 0 for 10 minutes while the others hash counts as stopped (not during warm-up)
+_d = lambda doms: {"hashrateMonitor": {"asics": [{"total": 1, "errorCount": 1, "domains": doms}]}}
+_doms_ok = (server.asic_domains(_d([408.0, 0, 367.2, 0])) == [408.0, 0.0, 367.2, 0.0] and server.asic_domains({}) is None
+            and server.asic_domains(_d("x")) is None and server.asic_domains(_d([1, None])) is None)
+server.domain_zero_since.pop("dd", None)
+_seq = []
+for _i in range(150):  # 12.5 minutes, 5 s apart, domains 2 and 4 stopped
+    _r = {"domains": [408.0, 0.0, 367.0, 0.0], "uptime": 3600 + 5 * _i}
+    server.track_domains("dd", _r, 70000.0 + 5 * _i)
+    _seq.append(_r["dead_domains"])
+_r2 = {"domains": [400.0, 380.0, 370.0, 360.0], "uptime": 4400}  # restarted fine
+server.track_domains("dd", _r2, 70800.0)
+_r3 = {"domains": [0.0, 0.0, 300.0, 0.0], "uptime": 60}  # still starting: not counted
+for _i in range(150):
+    server.track_domains("dd", _r3, 71000.0 + 5 * _i)
+_st = server.miner_status({"ok": True, "kind": "bitaxe", "dead_domains": 2, "domains": [1, 0, 1, 0]}, None)
+check("chip domains: a domain stuck at 0 for 10 minutes is flagged, not during warm-up",
+      _doms_ok and _seq[100] == 0 and _seq[-1] == 2 and _r2["dead_domains"] == 0 and _r3["dead_domains"] == 0
+      and _st == ("warn", "2 of 4 chip domains stopped"), str((_doms_ok, _seq[100], _seq[-1], _r2.get("dead_domains"), _st)))
+
 # Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
 _m = server.parse_braiins_metrics(
     '# HELP miner_power Metrics\nminer_power{socket="N/A",type="estimated"} 1953.4 1792096564103\n'

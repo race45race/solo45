@@ -595,7 +595,23 @@ def poll_bitaxe(ip):
         "max_power": i.get("maxPower"),
         "err_pct": i.get("errorPercentage"),
         "asic_errors": asic_error_count(i),
+        "domains": asic_domains(i),
     }
+
+
+def asic_domains(info):
+    """The hashrate of each hashing domain of each chip (a BM1370 has 4), or None when not reported."""
+    mon = info.get("hashrateMonitor")
+    asics = mon.get("asics") if isinstance(mon, dict) else None
+    if not isinstance(asics, list) or not asics:
+        return None
+    out = []
+    for a in asics:
+        doms = a.get("domains") if isinstance(a, dict) else None
+        if not isinstance(doms, list) or not doms or not all(isinstance(d, (int, float)) and not isinstance(d, bool) for d in doms):
+            return None
+        out.extend(float(d) for d in doms)
+    return out
 
 
 def asic_error_count(info):
@@ -1027,6 +1043,27 @@ def track_error_rate(ip, result, t):
     error_peak[ip] = count if peak is None or count > peak else peak
     result["errors_per_min"] = error_rate(hist, t)
 
+DOMAIN_DEAD_S = 600  # a chip domain at 0 for 10 minutes while the others hash has stopped (it stays so until a restart)
+domain_zero_since = {}  # ip -> {domain index: when it first read 0}
+
+
+def track_domains(ip, result, t):
+    """Count a Bitaxe's chip domains that have stopped hashing (lock held). At the edge of stability a domain can
+    stop and stay stopped until the miner restarts, costing a quarter of its hashrate per domain."""
+    doms, up = result.get("domains"), result.get("uptime") or 0
+    zero = domain_zero_since.setdefault(ip, {})
+    if not doms or up < ERRORS_WARMUP_S or not any(d > 0 for d in doms):
+        zero.clear()  # no data, still starting, or not hashing at all (other checks cover that)
+        result["dead_domains"] = 0 if doms else None
+        return
+    for k, v in enumerate(doms):
+        if v > 0:
+            zero.pop(k, None)
+        else:
+            zero.setdefault(k, t)
+    result["dead_domains"] = sum(1 for since in zero.values() if t - since >= DOMAIN_DEAD_S)
+
+
 def as_floor_map(floors):
     """{name: {"<freq>": floor}}; a saved file from v0.1.37 held one floor per miner ({name: floor})."""
     out = {}
@@ -1231,6 +1268,7 @@ def record(ip, result, err):
         if result:
             track_daily_best(ip, result, t)
             track_error_rate(ip, result, t)
+            track_domains(ip, result, t)
             track_volt_floor(ip, result, t)
             m.update(result)
             m["fails"], m["ok"], m["last_ok"], m["error"] = 0, True, t, None
@@ -1354,6 +1392,8 @@ def miner_status(m, tip):
         return "offline", "Not responding"
     if m.get("on_fallback"):
         return "warn", "On fallback pool"
+    if m.get("dead_domains") and m.get("domains"):
+        return "warn", "%d of %d chip domains stopped" % (m["dead_domains"], len(m["domains"]))
     if m.get("temp") and ((m["kind"] in ("bitaxe", "thor") and m["temp"] >= 70) or
                           (m["kind"] in ("braiins", "mara", "bitmain") and m["temp"] >= 85)):
         return "warn", "Running hot"

@@ -937,6 +937,7 @@ const tuneLimits = m => TUNE_LIMITS[m.asic] || {vr: 80, chip: 67};
 const floorFor = m => { const f = m.volt_floor; return f && m.frequency != null && m.frequency >= f.freq ? f : null; };
 function tuneAdvice(m, seen) {
   const L = tuneLimits(m), vr = m.temp2, chip = m.temp, err = m.errors_per_min, out = [], fl = floorFor(m);
+  if (m.dead_domains && m.domains) out.push(["warn", `${m.dead_domains} of ${m.domains.length} chip domains have stopped hashing (about ${Math.round(m.dead_domains / m.domains.length * 100)}% of its hashrate): restart the miner; if it happens again, lower the frequency 25 MHz`]);
   if (fl && m.core_mv != null && m.core_mv < fl.mv) out.push(["warn", `Below its voltage floor: raise it to ${fl.mv} mV (${fl.why === "auto" ? `errors jumped at ${fl.tried_mv || "a lower"} mV` : "marked as its floor"} at ${fl.freq} MHz)`]);
   if (vr != null && vr >= L.vr - 3) out.push(["warn", `Power stage ${Math.round(vr)}°C, near its ${L.vr}°C limit: lower the frequency 25 MHz, or raise the minimum fan speed`]);
   if (chip != null && chip >= L.chip - 2 && (m.fan || 0) >= 95) out.push(["warn", "Chip near its limit with the fan maxed: lower the frequency 25 MHz"]);
