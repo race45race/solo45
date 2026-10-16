@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.40"
+version: "0.1.41"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Chip errors in a Bitaxe's first 5 minutes after a start no longer count toward its error rate. Many Bitaxes throw a burst of errors while the chip ramps up, which made the tuning report show a very high rate (and suggest +25 mV) for up to 15 minutes after a restart.
+  New tuning history: every Bitaxe speed or voltage change is logged with its settled readings before, 40 minutes after, and now (temperatures, fan, watts, chip errors and how much of its work the pool saw), under the tuning report. And a new block odds page (the dice link on the block-chance tile): your chance of a block from today to 10 years, a live count of hashes tried, today's best shares against a block, and a few fun comparisons.
 
 
 developer: race45race
