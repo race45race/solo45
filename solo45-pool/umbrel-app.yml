@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.46"
+version: "0.1.47"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Back to basics: this update runs exactly the v0.1.33 image again, the version from the 126G best-share day. The features added since (Braiins PSU watts, tuning history and voltage floors, the odds page, chip-domain warnings, found-block resending, the AI model menu) are removed for now. Your settings and history are kept.
+  Found-block resending is back: if the node can't be reached when a block is found (or is still starting), the pool sends it again, up to 6 times 2 seconds apart. This runs the v0.1.45 image, whose hashing code is the same as v0.1.38. The dashboard extras return too: the odds page, Bitaxe tuning history and voltage floors, Braiins PSU watts, chip-domain and fan-maxed warnings, and the AI model menu. Your settings and history are kept.
 
 developer: race45race
 website: https://github.com/race45race/solo45
