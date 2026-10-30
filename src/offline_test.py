@@ -852,6 +852,25 @@ server.S["miners"].pop("10.9.9.21", None)
 check("tuning report: one voltage floor per frequency (the highest in effect counts; v0.1.37 files still load)",
       _both and _hi[0] == 200 and _left and _old_ok and _rb == 1 and (server.floor_for("BitaxeO", 600) or {}).get("mv") == 1275,
       "(both %s, clear %s, left %s, old %s)" % (_both, _hi, _left, _old_ok))
+# dashboard changes only from its own page: another site's request is turned away, whatever the browser's age
+def _origin_ok(**headers):
+    h = types.SimpleNamespace(headers={k.replace("_", "-"): v for k, v in headers.items()})
+    return server.Handler.same_origin(h)
+
+
+_own = _origin_ok(Sec_Fetch_Site="same-origin", Origin="http://umbrel.local:2345", Host="umbrel.local:2345")
+_typed = _origin_ok(Sec_Fetch_Site="none")
+_cross = _origin_ok(Sec_Fetch_Site="cross-site", Origin="https://evil.example", Host="umbrel.local:2345")
+_app = _origin_ok(Sec_Fetch_Site="same-site", Origin="http://umbrel.local:9999", Host="umbrel.local:2345")
+_old_own = _origin_ok(Origin="http://umbrel.local:2345", Host="umbrel.local:2345")
+_old_fwd = _origin_ok(Origin="http://umbrel.local:2345", Host="solo45-pool_dashboard_1:8099", X_Forwarded_Host="umbrel.local:2345")
+_old_cross = _origin_ok(Origin="https://evil.example", Host="umbrel.local:2345")
+_null = _origin_ok(Origin="null", Host="umbrel.local:2345")
+_script = _origin_ok(Host="10.21.22.146:8099")
+check("dashboard: changes from another website or app are refused, the dashboard's own page and scripts get through",
+      _own and _typed and not _cross and not _app and _old_own and _old_fwd and not _old_cross and not _null and _script,
+      "(own %s, cross %s, app %s, old own %s, old fwd %s, old cross %s, null %s, script %s)"
+      % (_own, _cross, _app, _old_own, _old_fwd, _old_cross, _null, _script))
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)

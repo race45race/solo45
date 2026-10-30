@@ -22,6 +22,7 @@ import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -2233,6 +2234,19 @@ class Handler(BaseHTTPRequestHandler):
             print("refused %s from %s (accepted: %s)" % (what, ip, ", ".join(sorted(allowed)) or "none"), flush=True)
         return ok
 
+    def same_origin(self):
+        """Changes only from the dashboard's own page. Another website open in the same browser could otherwise
+        send one here, with the Umbrel login riding along (say, a new payout address). Browsers mark such a
+        request Sec-Fetch-Site cross-site or same-site (another app on the Umbrel); older ones still send an
+        Origin that isn't this page's. A request with neither header isn't from a browser page."""
+        site = self.headers.get("Sec-Fetch-Site")
+        if site:
+            return site in ("same-origin", "none")
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        return urllib.parse.urlsplit(origin).netloc in {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
+
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
@@ -2242,6 +2256,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, b'{"error":"bad request"}', "application/json")
         if not self.from_proxy():
             return self.send(403, b'{"error":"changes are only accepted through the Umbrel login"}', "application/json")
+        if not self.same_origin():
+            ip = self.client_address[0]
+            if time.time() - refused_at.get(ip, 0) > 60:  # log it, at most once a minute per address
+                refused_at[ip] = time.time()
+                print("refused %s from another site (Sec-Fetch-Site %s, Origin %s, Host %s)" % (
+                    path, self.headers.get("Sec-Fetch-Site"), self.headers.get("Origin"), self.headers.get("Host")), flush=True)
+            return self.send(403, b'{"error":"changes are only accepted from the Solo45 dashboard itself"}', "application/json")
         if path in ("/api/solo45/worker", "/api/solo45/settings", "/api/solo45/policy", "/api/solo45/payout"):
             # per-miner difficulty and pool-wide settings, passed on to the pool (which only accepts them from here)
             try:
