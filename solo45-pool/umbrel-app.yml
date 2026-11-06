@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.48"
+version: "0.1.49"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
 releaseNotes: >-
-  Safer dashboard: settings changes (like the payout address) are now accepted only from the Solo45 dashboard itself, so another website open in the same browser can't send one. The pool's hashing code is unchanged (the same as v0.1.38, with found-block resending). Your settings and history are kept.
+  Every dashboard and odds window now has a collapse tab, and your browser remembers which ones you closed. Braiins miners report their active power limit, a brief node error on a new block no longer interrupts the dashboard's block feed, and only real private 172.16-31 addresses count as local pools. The pool's hashing code is unchanged (the same as v0.1.38, with found-block resending). Your settings and history are kept.
 
 developer: race45race
 website: https://github.com/race45race/solo45
