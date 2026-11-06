@@ -466,6 +466,44 @@ server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
       and server.pool_name("solo.ckpool.org", 3337) == "solo.ckpool.org")
+check("only 172.16-31 counts as a private pool address",
+      server.pool_name("172.16.0.5", server.STRATUM_PORT) == "Solo45"
+      and server.pool_name("172.31.1.1", server.STRATUM_PORT) == "Solo45"
+      and server.pool_name("172.15.0.1", server.STRATUM_PORT) == "172.15.0.1"
+      and server.pool_name("172.32.0.1", server.STRATUM_PORT) == "172.32.0.1")
+check("a Braiins miner's limit is its scaled limit when it has one",
+      server.live_power_limit({"PowerLimit": 2850, "DynamicPowerScaling": {"ScaledPowerLimit": 3450}}) == 3450
+      and server.live_power_limit({"PowerLimit": 2850}) == 2850 and server.live_power_limit({}) is None)
+feed_calls = []
+
+
+def flaky_tip(bhash, seen, live=True):
+    feed_calls.append(seen)
+    if len(feed_calls) < 3:
+        raise RuntimeError("node busy")
+
+
+def dead_tip(bhash, seen, live=True):
+    feed_calls.append(seen)
+    raise RuntimeError("node down")
+
+
+real_tip, real_sleep = server.on_new_tip, server.time.sleep
+server.time.sleep = lambda s: None
+try:
+    server.on_new_tip = flaky_tip
+    server.tip_from_feed("ab" * 32)
+    retried = len(feed_calls) == 3 and len(set(feed_calls)) == 1
+    feed_calls.clear()
+    server.on_new_tip = dead_tip
+    server.tip_from_feed("cd" * 32)  # must return, not raise: a raise would drop the ZMQ feed
+    survived = len(feed_calls) == 4
+finally:
+    server.on_new_tip, server.time.sleep = real_tip, real_sleep
+check("a node error on a new block retries and keeps the block feed up", retried and survived)
+pages = [open(os.path.join(server.BASE, n), encoding="utf-8").read() for n in ("index.html", "odds.html")]
+check("both pages load the collapse tabs", all('src="collapse.js"' in p for p in pages)
+      and os.path.exists(os.path.join(server.STATIC_DIR, "collapse.js")))
 if platform.system() == "Linux":
     check("memory release (malloc_trim) available", P.malloc_trim is not None and server.malloc_trim is not None)
 

@@ -258,6 +258,19 @@ def on_new_tip(bhash, seen_ms, live=True):
     add_block(hdr["height"], bhash, seen_ms, hdr["time"] * 1000, live)
 
 
+def tip_from_feed(bhash):
+    """One new block from the ZMQ feed. A node RPC hiccup must not drop the feed itself."""
+    seen = now_ms()
+    for wait in (0.5, 1, 2, None):
+        try:
+            return on_new_tip(bhash, seen)
+        except Exception as e:
+            if wait is None:
+                print("new block %s not read: %s" % (bhash, e), flush=True)
+                return
+            time.sleep(wait)
+
+
 def add_block(height, bhash, seen_ms, mined_ms, live):
     blk = {
         "height": height,
@@ -436,7 +449,7 @@ def zmq_loop(url):
             while True:
                 parts = sub.recv()
                 if len(parts) >= 2 and parts[0] == b"hashblock":
-                    on_new_tip(parts[1].hex(), now_ms())
+                    tip_from_feed(parts[1].hex())
         except Exception as e:
             print("block feed (%s): %s; retrying in 5 s" % (url, e), flush=True)
         finally:
@@ -551,9 +564,12 @@ def as_num(v):
 STRATUM_PORT = os.environ.get("SOLO45_STRATUM_PORT") or "3333"  # the port miners use for Solo45 (the app sets it)
 
 
+PRIVATE_172 = re.compile(r"172\.(1[6-9]|2[0-9]|3[01])\.")  # only 172.16-31 is private
+
+
 def pool_name(host, port):
     host = (host or "").replace("stratum+tcp://", "").strip("/")
-    private = host.startswith(("192.168.", "10.", "172.")) or host.endswith(".local")
+    private = host.startswith(("192.168.", "10.")) or bool(PRIVATE_172.match(host)) or host.endswith(".local")
     if private and str(port) == STRATUM_PORT:
         return "Solo45"
     if private and str(port) in CFG["pools"]:
@@ -666,6 +682,11 @@ def braiins_metrics(ip, now=None):
     return c
 
 
+def live_power_limit(tuner):
+    """The limit the tuner is working to: Braiins' scaled limit when it reports one."""
+    return (tuner.get("DynamicPowerScaling") or {}).get("ScaledPowerLimit") or tuner.get("PowerLimit")
+
+
 def poll_braiins(ip):
     summ = cgminer(ip, "summary")["SUMMARY"][0]
     pools = cgminer(ip, "pools").get("POOLS", [])
@@ -706,7 +727,7 @@ def poll_braiins(ip):
         "power_source": "psu" if measured else "estimate" if estimate else None,
         "power_estimate": estimate,
         "psu_v": met.get("psu_v"),
-        "power_limit": tuner.get("PowerLimit"),
+        "power_limit": live_power_limit(tuner),
         "fan": sum(fan_pcts) / len(fan_pcts) if fan_pcts else None,
         "best": as_num(summ.get("Best Share")),
         "best_session": None,
@@ -2148,6 +2169,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, f.read(), "text/html; charset=utf-8")
         elif path == "/api/state":
             self.send(200, json.dumps(snapshot()).encode(), "application/json")
+        elif path == "/collapse.js":
+            with open(os.path.join(STATIC_DIR, "collapse.js"), "rb") as f:
+                self.send(200, f.read(), "text/javascript; charset=utf-8")
         elif path == "/manifest.webmanifest":
             self.send(200, MANIFEST, "application/manifest+json")
         elif path.lstrip("/") in ICONS or path == "/favicon.ico":
