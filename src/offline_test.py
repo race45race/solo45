@@ -143,18 +143,17 @@ check("vardiff rules", vd(40, 450) is None and [vd(40, 200, _up), vd(40, 200, _u
 sw = types.SimpleNamespace(diff=1000.0, job_diff={"old": 8000.0}, switches_at_once=False)
 check("share credit", [P.Worker.share_credit(sw, "old", 9000.0), P.Worker.share_credit(sw, "old", 1500.0)] == [8000.0, 1000.0])
 
-# 6. the dashboard's modules, the AI module (its library loads only when used) and the time zones
+# 6. the dashboard's module and the time zones; the AI assistant is gone (0.1.50)
 from zoneinfo import ZoneInfo  # noqa: E402
 try:
     check("time zone data", ZoneInfo("America/Chicago").key == "America/Chicago")
 except Exception as e:
     check("time zone data", False, "(%s)" % e)
 import server  # noqa: E402,F401
-try:
-    import ai
-    check("AI module loads without its library", ai.anthropic is None)
-except ImportError as e:
-    check("AI module loads without its library", False, "(%s)" % e)
+_src = open(os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "server.py")).read()
+check("no AI assistant left: no module, no routes, no settings",
+      not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "ai.py"))
+      and "/api/ai/" not in _src and "import ai" not in _src and "ai" not in server.CFG)
 
 # 7. policy details: the quick multisig look, fee packages, and the watch part done after the job
 taproot_ae = b"\x51\x20" + bytes(31) + b"\xae"
@@ -812,18 +811,36 @@ check("chip domains: a domain stuck at 0 for 10 minutes is flagged, not during w
       _doms_ok and _seq[100] == 0 and _seq[-1] == 2 and _r2["dead_domains"] == 0 and _r3["dead_domains"] == 0
       and _st == ("warn", "2 of 4 chip domains stopped"), str((_doms_ok, _seq[100], _seq[-1], _r2.get("dead_domains"), _st)))
 
-# AI model menu: every offered model is priced, retired choices map to an offered successor
-try:
-    import ai as _ai  # noqa: E402
-except ImportError:
-    _ai = None
-    print("SKIP  AI models (the anthropic library isn't installed here; checked inside the image)")
-if _ai:
-    _ids = [m for m, _, _ in _ai.MODELS]
-    check("AI models: the menu is priced, retired choices move to a current model",
-          all(m in _ai.PRICES for m in _ids) and all(s in _ids for s in _ai.SUCCESSORS.values())
-          and _ai.current_model("claude-opus-5") == "claude-opus-5-5" and _ai.current_model("claude-fable-5-1") == "claude-fable-5-1"
-          and _ai.current_model(server.CFG["ai"]["model"]) in _ids, str(_ids))
+# best-share round: Refresh starts it over for every miner, and it is saved for the next start
+_code, _r = server.reset_round()
+_saved = json.load(open(server.ROUND_PATH))
+with server.lock:
+    _since = server.S["round"]["since"]
+    server.note_round_shares([{"worker": w, "share": d, "t": _since + dt, "rejected": rej} for w, d, dt, rej in (
+        ("A", 500.0, 1, False), ("B", 9000.0, 2, False), ("A", 7000.0, 3, False),
+        ("A", 99999.0, 4, True), ("B", 90000.0, -10, False))])  # a rejected share and one from before Refresh don't count
+    _br = server.best_round()
+check("best-share round: highest first, reset saved",
+      _code == 200 and [(m["name"], m["best"]) for m in _br["miners"]] == [("B", 9000.0), ("A", 7000.0)]
+      and _saved["since"] == _since and _saved["miners"] == {}, str(_br))
+server.reset_round()
+check("best-share round: Refresh clears every miner", server.best_round()["miners"] == [])
+
+# a miner on a Bitcoin Cash pool reports BCH's difficulty: while Solo45 answers, the node's number stays
+with server.lock:
+    _old = (server.S["solo45"], server.S["netdiff"])
+    server.S["solo45"], server.S["netdiff"] = {"up": True}, 148e12
+server.record("10.9.9.77", {"name": "BchMiner", "kind": "braiins", "ths": 100.0, "netdiff": 502e9, "reward_sats": 313000000}, None)
+_kept = server.S["netdiff"]
+with server.lock:
+    server.S["solo45"] = {"up": False}
+server.record("10.9.9.77", {"name": "BchMiner", "kind": "braiins", "ths": 100.0, "netdiff": 147e12}, None)
+_fallback = server.S["netdiff"]
+with server.lock:
+    server.S["solo45"], server.S["netdiff"] = _old
+    server.S["miners"].pop("10.9.9.77", None)
+check("network difficulty: a miner on another chain can't change it while Solo45 answers", _kept == 148e12 and _fallback == 147e12,
+      str((_kept, _fallback)))
 
 # Braiins OS metrics page: the PSU's measured watts and voltage (0 W = this PSU doesn't report watts)
 _m = server.parse_braiins_metrics(

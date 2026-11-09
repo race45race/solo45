@@ -5,8 +5,8 @@ Reads the Bitcoin Core log as it is written (and a ckpool log, if another pool
 such as Go Brrr runs on the same Umbrel), polls Bitaxe (AxeOS HTTP API) and
 Braiins OS (CGMiner API, port 4028) miners and the Solo45 pool, and serves one
 page plus a Server-Sent Events stream. It changes Solo45's settings only when
-the user asks, and can send phone alerts through ntfy.
-The optional Claude assistant (ai.py) needs the anthropic library from ./venv.
+the user asks, and can send phone alerts through ntfy. It never talks to anything
+outside your network except the ntfy server you choose for alerts.
 """
 import base64
 import collections
@@ -46,6 +46,7 @@ KNOWN_PATH = os.path.join(DATA, "known_miners.json")
 TEMPS_PATH = os.path.join(DATA, "temps.json")
 VOLT_PATH = os.path.join(DATA, "volt_floors.json")  # each Bitaxe's known lowest safe core voltage
 TUNING_PATH = os.path.join(DATA, "tuning_history.json")  # each Bitaxe's speed/voltage changes, before and after
+ROUND_PATH = os.path.join(DATA, "best_round.json")  # each miner's best share since the owner last pressed Refresh
 NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
 
 CFG = {
@@ -70,8 +71,6 @@ CFG = {
     "kwh_price": 0.12,  # price per kWh for the electricity cost figures; set on the dashboard
     "currency": "$",    # symbol shown with costs
     "timezone": "",     # the user's time zone, taken from their browser, e.g. America/Chicago ("" = the server's)
-    "ai": {"model": "claude-opus-5-5", "weekly_cap_usd": 2.0, "monthly_cap_usd": 8.0, "report_hour": 8,
-           "report_every_days": 3},
     # phone alerts through ntfy (https://ntfy.sh or your own server); off until the user turns them on
     "notify": {"on": False, "server": "https://ntfy.sh", "topic": "", "after_min": 10, "click": "",
                "events": {"block": True, "best": True, "offline": True, "hot": True, "node": True}},
@@ -79,7 +78,7 @@ CFG = {
 if os.path.exists(CFG_PATH):
     with open(CFG_PATH) as f:
         _user = json.load(f)
-    CFG["ai"].update(_user.pop("ai", {}))
+    _user.pop("ai", None)  # settings of the AI assistant that versions before 0.1.50 had; no longer used
     _notify = _user.pop("notify", {})
     CFG["notify"]["events"].update(_notify.pop("events", {}))
     CFG["notify"].update(_notify)
@@ -89,13 +88,6 @@ for _var, _key, _kind in (("SOLO45_DASH_PORT", "port", int), ("BITCOIN_RPC_URL",
                           ("BITCOIN_ZMQ_HASHBLOCK", "zmq_hashblock", str)):
     if os.environ.get(_var):  # environment settings (used by the Umbrel app) win over config.json
         CFG[_key] = _kind(os.environ[_var])
-
-try:  # the assistant needs the anthropic library, installed in ./venv
-    import ai
-except Exception as e:  # a broken or missing assistant must never take the dashboard down
-    ai = None
-    print("AI assistant disabled:", e, flush=True)
-assistant = None
 
 try:  # glibc keeps memory that Python freed in per-thread pools; malloc_trim hands it back (absent elsewhere)
     malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
@@ -122,6 +114,7 @@ S = {
     "solo45": {"up": False},  # latest Solo45 pool API reply
     "shares": collections.deque(maxlen=200),  # live share feed from Solo45, oldest first
     "daily": {},         # {"date", "miners": {name: {"best", "at", "hashes"}}}: best share today
+    "round": {},         # {"since", "miners": {name: {"best", "at"}}}: best share since the last Refresh
     "best_history": [],  # one entry per finished day: {"date", "best", "name", "typical", "miners"}
     "work": {},          # {"month", "hashes", "since", "prev"}: fleet hashes this month
     "temps": {},         # name -> [[t, chip, vr, online], ...] every 5 minutes for 24 h
@@ -387,11 +380,16 @@ def solo45_loop():
                             if rec is not None and not sh["rejected"] and (sh["share"] or 0) > rec["best"] \
                                     and sh["t"] >= S["daily"].get("since", 0):
                                 rec["best"], rec["at"] = sh["share"], sh["t"]
+                    note_round_shares(new)
                 broadcast("shares", new)
             p = d["pool"]
             sw = p.get("last_switch")
             with lock:
                 S["solo45"] = dict(p, up=True, workers=d["workers"], checked=time.time())
+                if p.get("network_diff"):  # from your own node: the Bitcoin difficulty, whatever pool a miner is on
+                    S["netdiff"] = p["network_diff"]
+                if p.get("reward"):
+                    S["reward_sats"] = p["reward"]
                 if sw and sw.get("workers") and p.get("prev"):  # 0 workers = pool (re)start
                     t = int(sw["at"] * 1000)
                     for b in S["blocks"]:
@@ -468,24 +466,6 @@ def tip_poll_loop():
         except Exception:
             pass
         time.sleep(1)
-
-
-def node_status():
-    """Bitcoin Core's state for the assistant, straight from RPC (no log files needed)."""
-    bc, net, mp = rpc("getblockchaininfo"), rpc("getnetworkinfo"), rpc("getmempoolinfo")
-    peers = rpc("getpeerinfo")
-    return {
-        "blocks": bc["blocks"], "headers": bc["headers"], "initial_block_download": bc["initialblockdownload"],
-        "verification_progress": bc["verificationprogress"], "size_on_disk_gb": round(bc.get("size_on_disk", 0) / 1e9, 1),
-        "pruned": bc.get("pruned"), "version": net["subversion"], "relay_fee_sat_vb": net["relayfee"] * 1e5,
-        "connections_in": net["connections_in"], "connections_out": net["connections_out"],
-        "mempool": {"txs": mp["size"], "mb": round(mp["bytes"] / 1e6, 2), "usage_mb": round(mp["usage"] / 1e6, 1),
-                    "max_mb": round(mp["maxmempool"] / 1e6), "min_fee_sat_vb": mp["mempoolminfee"] * 1e5},
-        "peers": [{"id": p["id"], "inbound": p["inbound"], "type": p.get("connection_type"), "version": p.get("subver"),
-                   "synced_blocks": p.get("synced_blocks"), "ping_ms": round(p["pingtime"] * 1000) if p.get("pingtime") else None,
-                   "blocks_in_flight": p.get("inflight")} for p in peers[:40]],
-        "other_chain_tips": [t for t in rpc("getchaintips") if t["status"] != "active"][:5],
-    }
 
 
 def node_loop():
@@ -1295,10 +1275,14 @@ def record(ip, result, err):
             m.update(result)
             m["fails"], m["ok"], m["last_ok"], m["error"] = 0, True, t, None
             track_tuning(ip, m, t)
-            if result.get("netdiff"):
-                S["netdiff"] = result["netdiff"]
-            if result.get("reward_sats"):
-                S["reward_sats"] = result["reward_sats"]
+            # A miner reports the difficulty and reward of the chain its own pool mines: on a Bitcoin Cash
+            # pool that's BCH's, which made the odds jump about 30,000x. Solo45 reads them from your node,
+            # so a miner's numbers are only used while Solo45 isn't answering.
+            if not S["solo45"].get("up"):
+                if result.get("netdiff"):
+                    S["netdiff"] = result["netdiff"]
+                if result.get("reward_sats"):
+                    S["reward_sats"] = result["reward_sats"]
             tip = S["tip"]
             # A miner reports the height of the block it is working on: tip + 1.
             if tip and tip["live"] and (result.get("height") or 0) > tip["height"]:
@@ -1460,6 +1444,42 @@ def best_today():
                       "typical": fleet_hashes / 2 ** 32, "ratio": ratio, "tag": tag}}
 
 
+def note_round_shares(shares):
+    """Count Solo45's new shares toward the best-share round (lock held). The first round starts with the
+    first shares this version sees."""
+    rnd = S["round"]
+    if not rnd.get("since"):
+        rnd.clear()
+        rnd.update(since=time.time(), miners={})
+    for sh in shares:
+        if sh.get("rejected") or not sh.get("worker") or (sh.get("t") or 0) < rnd["since"]:
+            continue
+        rec = rnd["miners"].setdefault(sh["worker"], {"best": 0, "at": None})
+        if (sh.get("share") or 0) > rec["best"]:
+            rec["best"], rec["at"] = sh["share"], sh["t"]
+
+
+def best_round():
+    """Each miner's best share since the owner last pressed Refresh, highest first (lock held)."""
+    rnd = S["round"]
+    rows = [{"name": n, "best": d["best"], "at": d["at"]} for n, d in (rnd.get("miners") or {}).items()]
+    rows.sort(key=lambda r: r["best"], reverse=True)
+    return {"since": rnd.get("since"), "miners": rows}
+
+
+def reset_round():
+    """Start a new best-share round for every miner."""
+    with lock:
+        S["round"] = {"since": time.time(), "miners": {}}
+        rnd = json.loads(json.dumps(S["round"]))
+    try:
+        save_json(ROUND_PATH, rnd)
+    except OSError:
+        pass
+    print("best-share round restarted", flush=True)
+    return 200, {"ok": True, "since": rnd["since"]}
+
+
 def miner_extras(m, now):
     """Electricity cost, 24 h uptime, temperature trend and pool-measured hashrate (lock held)."""
     rows = [r for r in S["temps"].get(m.get("name"), []) if r[0] >= now - 86400]
@@ -1540,6 +1560,7 @@ def snapshot():
             "gobrrr": S["gobrrr"],
             "solo45": S["solo45"],
             "best_today": best_today(),
+            "best_round": best_round(),
             "best_history": S["best_history"][-30:],
             "tuning": tuning_history[-60:],
             "work": work_summary(nd),
@@ -1601,25 +1622,6 @@ def save_all():
     save_known_miners()
 
 
-def miner_raw(ip):
-    """Everything a miner reports, for the assistant."""
-    if ip not in miner_ips():
-        raise ValueError("%s is not one of the dashboard's miners" % ip)
-    if kind_cache.get(ip) == "braiins":
-        return {cmd: cgminer(ip, cmd) for cmd in ("summary", "pools", "devs", "temps", "fans", "tunerstatus")}
-    return http_json("http://%s/api/system/info" % ip)
-
-
-def history_sample(hours):
-    """Hashrate history, one point per 10 minutes (the stored history is every 30 s)."""
-    with lock:
-        hist = [h for h in S["history"] if h[0] >= time.time() - hours * 3600]
-    out = []
-    for ts, total, by_pool in hist[::20]:
-        out.append({"time": datetime.fromtimestamp(ts).strftime("%H:%M"), "ths": total, "by_pool": by_pool})
-    return out
-
-
 def save_dash_settings(data):
     """Electricity price and currency from the dashboard, saved in config.json so they survive restarts."""
     new = {}
@@ -1654,7 +1656,7 @@ def save_dash_settings(data):
 
 
 def save_config(new, section=None):
-    """Merge settings into config.json (or its "ai" section), keeping everything else in it."""
+    """Merge settings into config.json (or one of its sections), keeping everything else in it."""
     with lock:
         try:
             with open(CFG_PATH) as f:
@@ -1666,51 +1668,6 @@ def save_config(new, section=None):
         with open(tmp, "w") as f:
             json.dump(saved, f, indent=1)
         os.replace(tmp, CFG_PATH)
-
-
-def save_ai_settings(data):
-    """Model, spending caps and report schedule for the AI assistant."""
-    new = {}
-    if "model" in data:
-        data["model"] = ai.current_model(data["model"])  # e.g. an older backup naming a retired menu choice
-        if data["model"] not in [m for m, _, _ in ai.MODELS]:
-            return 400, {"error": "unknown model"}
-        new["model"] = data["model"]
-    for key in ("weekly_cap_usd", "monthly_cap_usd"):
-        if key in data:
-            try:
-                val = float(data[key])
-            except (TypeError, ValueError):
-                return 400, {"error": "the spending limits must be numbers"}
-            if not 0 <= val <= 1000:
-                return 400, {"error": "the spending limits must be between $0 and $1,000"}
-            new[key] = round(val, 2)
-    if "report_every_days" in data:
-        try:
-            val = int(data["report_every_days"])
-        except (TypeError, ValueError):
-            return 400, {"error": "bad report schedule"}
-        if not 0 <= val <= 30:
-            return 400, {"error": "reports can be every 1 to 30 days, or off"}
-        new["report_every_days"] = val
-    if "report_hour" in data:
-        try:
-            val = int(data["report_hour"])
-        except (TypeError, ValueError):
-            return 400, {"error": "bad report hour"}
-        if not 0 <= val <= 23:
-            return 400, {"error": "the report hour must be 0 to 23"}
-        new["report_hour"] = val
-    if "notes" in data:  # the owner's facts about their setup; the assistant reads them with every question
-        notes = str(data["notes"] or "").strip()
-        if len(notes) > 8000:
-            return 400, {"error": "the notes can be up to 8,000 characters"}
-        new["notes"] = notes
-    if not new:
-        return 400, {"error": "nothing to save"}
-    save_config(new, "ai")
-    CFG["ai"].update(new)  # the assistant reads this same dict
-    return 200, dict(assistant.status(), ok=True)
 
 
 def default_gateway(route_file="/proc/net/route"):
@@ -1774,10 +1731,13 @@ def history_loop():
             if n % 10 == 1:
                 sample_temps(time.time())
             daily = json.loads(json.dumps(S["daily"]))
+            rnd = json.loads(json.dumps(S["round"]))
             work = dict(S["work"])
         try:
             save_json(DAILY_PATH, daily)
             save_json(WORK_PATH, work)
+            if rnd.get("since"):
+                save_json(ROUND_PATH, rnd)
         except OSError:
             pass
         if time.time() - last_save > 300:
@@ -2053,7 +2013,6 @@ def widget():
 
 # ---------------------------------------------------------- backup and restore
 
-BACKUP_AI_KEYS = ("model", "weekly_cap_usd", "monthly_cap_usd", "report_every_days", "report_hour", "notes")
 BACKUP_NOTIFY_KEYS = ("on", "server", "topic", "after_min", "events")
 
 
@@ -2062,15 +2021,14 @@ def solo45_get(path, timeout=5):
 
 
 def make_backup():
-    """Everything the user set up, in one file: Solo45's settings plus the dashboard's. No secrets (AI key,
-    ntfy token), no statistics or logs."""
+    """Everything the user set up, in one file: Solo45's settings plus the dashboard's. No secrets (ntfy
+    token), no statistics or logs."""
     return {
         "solo45_backup": 1,
         "made": local_now().isoformat(timespec="seconds"),
         "pool": solo45_get("/api/export"),
         "dashboard": {
             "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
-            "ai": {k: CFG["ai"][k] for k in BACKUP_AI_KEYS if k in CFG["ai"]},
             "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
             "volt_floors": json.loads(json.dumps(volt_floors)),
         },
@@ -2096,13 +2054,7 @@ def restore_backup(data):
         save_config(lists)
         CFG.update(lists)
         done.append("miner list")
-    ai_part = {k: v for k, v in (dash.get("ai") or {}).items() if k in BACKUP_AI_KEYS}
-    notes = ai_part.pop("notes", None)
-    if ai_part and assistant:
-        step("AI settings", save_ai_settings(ai_part))
-    if isinstance(notes, str) and len(notes) <= 8000:
-        save_config({"notes": notes}, "ai")
-        CFG["ai"]["notes"] = notes
+    # an "ai" part (backups from before 0.1.50) is skipped: the assistant is gone
     if isinstance(dash.get("volt_floors"), dict) and dash["volt_floors"]:
         n = restore_volt_floors(dash["volt_floors"])
         if n:
@@ -2137,7 +2089,7 @@ MANIFEST = json.dumps({  # lets phones add the dashboard to the home screen as a
 }).encode()
 
 
-PRIVATE_READS = ("/api/state", "/api/shares", "/events", "/api/ai/status")
+PRIVATE_READS = ("/api/state", "/api/shares", "/events")
 refused_at = {}  # ip -> when a refusal from it was last logged
 
 
@@ -2184,9 +2136,6 @@ class Handler(BaseHTTPRequestHandler):
             with lock:
                 shares = list(S["shares"])
             self.send(200, json.dumps(shares).encode(), "application/json")
-        elif path == "/api/ai/status":
-            st = assistant.status() if assistant else {"enabled": False, "unavailable": True}
-            self.send(200, json.dumps(st).encode(), "application/json")
         elif path == "/api/widget":  # fetched by umbrelOS for the home-screen widget
             self.send(200, json.dumps(widget()).encode(), "application/json")
         elif path == "/api/backup":
@@ -2308,30 +2257,18 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/api/notify/settings", "/api/notify/test"):
             code, reply = save_notify_settings(data) if path.endswith("settings") else notify_test()
             return self.send(code, json.dumps(reply).encode(), "application/json")
-        if path.startswith("/api/ai/") and not assistant:
-            return self.send(503, b'{"error":"The AI assistant is not installed."}', "application/json")
-        if path == "/api/ai/key":
-            code, reply = assistant.set_key(data.get("key"))
+        if path == "/api/dash/round":
+            code, reply = reset_round()
             return self.send(code, json.dumps(reply).encode(), "application/json")
-        if path == "/api/ai/settings":
-            code, reply = save_ai_settings(data)
-            return self.send(code, json.dumps(reply).encode(), "application/json")
-        if path == "/api/ai/ask":
-            reply = assistant.ask(data.get("question", ""), data.get("history") or [])
-        elif path == "/api/ai/report":
-            reply = assistant.make_report()
-        else:
-            return self.send(404, b'{"error":"not found"}', "application/json")
-        self.send(200, json.dumps(reply).encode(), "application/json")
+        self.send(404, b'{"error":"not found"}', "application/json")
 
 
 def main():
-    global assistant
-    if ai:
-        assistant = ai.Assistant(CFG["ai"], snapshot, miner_raw, history_sample, node_status, local_now)
-        threading.Thread(target=assistant.report_loop, daemon=True).start()
     S["history"] = load_json(HISTORY_PATH, [])[-2880:]
     S["daily"] = load_json(DAILY_PATH, {})
+    S["round"] = load_json(ROUND_PATH, {})
+    if not isinstance(S["round"], dict) or not isinstance(S["round"].get("miners"), dict):
+        S["round"] = {}  # the first round starts with the first shares seen
     S["best_history"] = load_json(BEST_HISTORY_PATH, [])
     S["work"] = load_json(WORK_PATH, {})
     S["temps"] = load_json(TEMPS_PATH, {})

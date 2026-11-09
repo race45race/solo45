@@ -18,7 +18,7 @@ description: >-
 
   • Live dashboard: hashrate, temperatures, best shares, how fast your miners switch to each new block, electricity cost and your odds, for Bitaxe (AxeOS) and Braiins OS miners.
 
-  • Optional AI assistant using your own Anthropic API key, with weekly and monthly spending limits.
+  • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
   Every dashboard and odds window now has a collapse tab, and your browser remembers which ones you closed. Braiins miners report their active power limit, a brief node error on a new block no longer interrupts the dashboard's block feed, and only real private 172.16-31 addresses count as local pools. The pool's hashing code is unchanged (the same as v0.1.38, with found-block resending). Your settings and history are kept.
 

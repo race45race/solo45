@@ -24,7 +24,7 @@ Build blocks from your own node, keep 100% of any block you find, and watch your
 - **Steady share difficulty.** Automatic vardiff per miner, remembered across restarts, or a fixed difficulty or share rate per miner.
 - **Phone alerts** through the free [ntfy](https://ntfy.sh) app: block found, a new best share, a miner offline, on its backup pool or running hot, node or pool trouble.
 - **Made for Umbrel.** Browser setup (no SSH), a home-screen widget, settings backup and restore, a screenshot mode that hides your address and IPs, and everything behind your Umbrel login.
-- **Optional AI assistant.** Ask about your setup in plain English with your own Anthropic API key, with weekly and monthly spending limits.
+- **Nothing leaves your network.** No accounts, no cloud services, no API keys: the only outside service is ntfy, and only if you turn on phone alerts.
 
 ## Install on Umbrel
 
@@ -60,12 +60,11 @@ The dashboard also works on a phone, and can be added to your home screen as an 
 
 ## What's on the dashboard
 
-- **Top line:** fleet hashrate, power and electricity cost, chance of a block today and this year, expected time to a block, best share ever.
-- **Latest block:** how many milliseconds after your node accepted the block each miner got new work.
-- **Miners:** status, pool, hashrate, power and cost, J/TH, temperature trend, best share, shares, the block each miner is working on, uptime.
-- **Solo45 settings:** payout address and the "Always pay my address" switch, how often jobs refresh, the stall guard, and share difficulty per miner.
-- **Template policy:** the rules, what they skipped per block, and totals for the last 24 hours, 7 days and 30 days.
-- **Phone alerts, best share today, network and node, live shares, recent blocks, the AI assistant, backup and restore.**
+Three tabs:
+
+- **Home:** six colored tiles (fleet hashrate, the block being mined, chance of a block today, best share today, power and cost, miners online), the 24-hour hashrate chart, a short miners table (click a miner for its pool, J/TH, cost, fan, shares, block and uptime), and the blocks Solo45 has found.
+- **Details:** live shares, best share by miner (this round, today and all time, with a Refresh button that starts a new round for every miner), best share today and its luck, the tuning report and history, how fast each miner switched to the latest block, luck and work, best share history, network and node, and recent blocks.
+- **Settings:** payout address and the "Always pay my address" switch, job timing, the stall guard, electricity price, share difficulty per miner, template policy, phone alerts, and backup and restore.
 
 Handy extras: **Screenshot mode** (footer) hides your payout address, IP addresses and alert topic so you can share screenshots. "Best share today" resets at *your* midnight (the time zone comes from your browser).
 
@@ -74,7 +73,7 @@ Handy extras: **Screenshot mode** (footer) hides your payout address, IP address
 - `src/pool.py` is the Stratum v1 pool. It asks your node for block templates over RPC, hears about new blocks through the node's long-poll (with a check every 100 ms as a backup), refreshes jobs with new transactions every 30 seconds (adjustable), has the node check each job, and submits a found block straight away.
 - `src/server.py` is the dashboard. It polls the miners' own local APIs (AxeOS over HTTP, Hammer Thor OS over HTTP, Braiins OS over the CGMiner API on port 4028), hears about new blocks from the node's ZMQ feed, and serves one page with live updates.
 - `src/policy.py` is the template policy, `src/stallguard.py` the stall guard.
-- The pool and dashboard use only the Python standard library; the optional AI assistant uses the `anthropic` library.
+- The pool and dashboard use only the Python standard library.
 
 ## Run without Umbrel
 
@@ -128,7 +127,7 @@ Both programs also run straight from the source with Python 3 (tested with 3.13)
 - The stratum port (3333) is open to your local network, because your miners need it. **Don't forward it to the internet.** Solo45 limits connections per address and drops connections that don't log in within 2 minutes, but it's built for a home network.
 - Settings can only be changed, and the live data only read, through the Umbrel login. The pool's own API only answers the dashboard, with a per-install secret.
 - With **Always pay my address** on, nobody else on your network can point a miner at your pool and mine to their own address.
-- No telemetry. Solo45 only talks to your node and your miners, plus [ntfy](https://ntfy.sh) and Anthropic if you turn on alerts or the AI assistant.
+- No telemetry. Solo45 only talks to your node and your miners, plus [ntfy](https://ntfy.sh) if you turn on phone alerts.
 - The settings backup file contains your payout address and alert topic: keep it private.
 
 ## FAQ
