@@ -59,8 +59,6 @@ header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-
 .brand-logo { width: 36px; height: 36px; display: block; }
 .brand .coin { width: 26px; height: 26px; border-radius: 50%; background: var(--accent); color: #fff;
   display: grid; place-items: center; font-weight: 800; font-size: 15px; }
-.tipbox { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-left: auto; }
-.tipbox .h { font-size: 15px; font-weight: 600; }
 .live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
 .live.on i { background: var(--ok); box-shadow: 0 0 0 0 var(--ok); animation: pulse 2s infinite; }
@@ -231,10 +229,11 @@ body.privacy .sensitive { filter: blur(6px); }
 }
 @media (max-width: 520px) {
   .kpi .value { font-size: 23px; }
+  .spark { width: 52px; }  /* the miners table fits a phone without sideways scrolling */
+  #miners td.first { white-space: normal; }
   .kpi { padding: 12px 13px 13px; }
   .tabs a { padding: 8px 12px 10px; }
   .tl-row { grid-template-columns: 90px 1fr 56px; }
-  .tipbox { margin-left: 0; }
 }
 </style>
 </head>
@@ -254,12 +253,6 @@ body.privacy .sensitive { filter: blur(6px); }
   <header>
     <div class="brand"><img class="brand-logo" src="logo-mark.png" alt="">Solo45</div>
     <span class="live" id="live"><i></i><span>connecting…</span></span>
-    <div class="tipbox">
-      <span class="h">Block <span class="num" id="tipH">—</span></span>
-      <span class="muted"><span class="num" id="tipAgo">—</span> ago</span>
-      <span class="muted">Difficulty <span class="num" id="netdiff">—</span></span>
-      <span class="muted">Reward <span class="num" id="reward">—</span></span>
-    </div>
   </header>
 
   <nav class="tabs" aria-label="Dashboard sections">
@@ -327,7 +320,7 @@ body.privacy .sensitive { filter: blur(6px); }
         <thead><tr>
           <th class="first">Miner</th><th>Status</th>
           <th class="r">Hashrate</th>
-          <th class="r" title="Now (chip / VR), and the last 24 hours: chip line solid, VR line faint">Temp</th><th class="r">Power</th><th class="r hide-sm" title="Best since the miner restarted / all time">Best share</th>
+          <th class="r" title="Now (chip / VR), and the last 24 hours: chip line solid, VR line faint">Temp</th><th class="r hide-sm">Power</th><th class="r hide-sm" title="Best since the miner restarted / all time">Best share</th>
         </tr></thead>
         <tbody id="miners"></tbody>
       </table>
@@ -712,9 +705,6 @@ function render(s) {
   syncTimezone(s);
   const T = s.totals, tip = s.tip;
 
-  $("tipH").textContent = tip ? tip.height.toLocaleString() : "—";
-  $("netdiff").textContent = fmtDiff(T.netdiff);
-  $("reward").textContent = T.reward_sats ? (T.reward_sats / 1e8).toFixed(4) + " BTC" : "—";
 
   // KPIs
   const [v, u] = thParts(T.ths);
@@ -724,7 +714,10 @@ function render(s) {
   $("kPools").innerHTML = (T.j_per_th ? `<span>${T.j_per_th.toFixed(1)} J/TH</span>` : "")
     + (pools.length > 1 ? pools.map(([p, t]) => `<span>${esc(p)} ${fmtTH(t)}</span>`).join("") : "");
   $("kBlock").textContent = tip ? (tip.height + 1).toLocaleString() : "—";
-  $("kBlockSub").innerHTML = tip ? `<span>last block <span id="kBlockAgo">${fmtDur((Date.now() - tip.seen_ms) / 1000)}</span> ago</span>` : "";
+  // the difficulty and reward lived in a header line that repeated this tile; they're part of it now
+  $("kBlockSub").innerHTML = (tip ? `<span>last block <span id="kBlockAgo">${fmtDur((Date.now() - tip.seen_ms) / 1000)}</span> ago</span>` : "")
+    + (T.reward_sats ? `<span>reward ${(T.reward_sats / 1e8).toFixed(4)} BTC</span>` : "")
+    + (T.netdiff ? `<span>difficulty ${fmtDiff(T.netdiff)}</span>` : "");
   $("kPower").innerHTML = T.power ? (T.power >= 1000 ? (T.power / 1000).toFixed(2) + "<small>kW</small>" : Math.round(T.power) + "<small>W</small>") : "—";
   $("kEff").innerHTML = (T.cost_day ? `<span>${esc(cur())}${T.cost_day.toFixed(2)} a day · ${esc(cur())}${(T.cost_day * 30.4).toFixed(0)} a month</span>` : "")
     + `<span><a href="#kwhPrice" class="kwh-link" title="Change your electricity price">${T.kwh_price ? "at " + esc(cur()) + T.kwh_price + "/kWh" : "set your electricity price"}</a></span>`;
@@ -965,7 +958,7 @@ function renderMiners(s) {
         <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
-        <td class="r num"${powerTitle ? ` title="${esc(powerTitle)}"` : ""}>${m.power ? Math.round(m.power) + " W" : "—"}</td>
+        <td class="r num hide-sm"${powerTitle ? ` title="${esc(powerTitle)}"` : ""}>${m.power ? Math.round(m.power) + " W" : "—"}</td>
         <td class="r num hide-sm" title="${m.best_session != null ? "since restart / all-time" : "since restart"}">${best}</td>
       </tr>`);
       const d = (k, v) => `<div><span class="k">${k}</span><span class="v">${v}</span></div>`;
@@ -1076,7 +1069,7 @@ function renderTuneHistory(s) {
     return {temp: m.temp, vr: m.temp2, fan: m.fan != null ? Math.round(m.fan) : null, w: m.power != null ? Math.round(m.power * 10) / 10 : null,
             err: m.errors_per_min, seen: m.pool_ths != null && ref ? m.pool_ths / ref : null};
   };
-  const shown = tuneHistAll ? ev : ev.slice(0, 10);
+  const shown = tuneHistAll ? ev : ev.slice(0, 3);
   const html = shown.map(e => {
     const when = new Date(e.at * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"});
     const ch = e.from.mv === e.to.mv ? `${e.from.freq} → <b>${e.to.freq}</b> MHz<div class="msub">${e.to.mv} mV</div>`
@@ -1085,7 +1078,7 @@ function renderTuneHistory(s) {
       + `<td>${tuneHistCell(e.before)}</td><td>${tuneHistCell(e.after)}</td><td>${tuneHistCell(now(e))}</td></tr>`;
   }).join("");
   if (html !== tuneHistHtml) { tuneHistHtml = html; $("tuneHistRows").innerHTML = html; }
-  $("tuneHistMore").textContent = ev.length > 10 ? (tuneHistAll ? "Show the latest 10" : `Show all ${ev.length}`) : "";
+  $("tuneHistMore").textContent = ev.length > 3 ? (tuneHistAll ? "Show the latest 3" : `Show all ${ev.length}`) : "";
 }
 $("tuneHistMore").addEventListener("click", e => { e.preventDefault(); tuneHistAll = !tuneHistAll; tuneHistHtml = ""; if (state) renderTuneHistory(state); });
 
@@ -1663,7 +1656,6 @@ function renderChart(s) {
 setInterval(() => {
   if (!state || !state.tip) return;
   const ago = fmtDur((Date.now() - state.tip.seen_ms) / 1000);
-  $("tipAgo").textContent = ago;
   if ($("kBlockAgo")) $("kBlockAgo").textContent = ago;
 }, 1000);
 
