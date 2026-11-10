@@ -1422,11 +1422,31 @@ def luck(best, typical):
     return ratio, tag
 
 
+def merged_daily():
+    """Today's per-miner records with each miner under its current name (lock held). A Braiins miner is named
+    by its pool worker, so while it fails over to a pool with another worker name, or has none, it shows up
+    for a moment as e.g. "S19Kpro" or its IP; those records are folded into the miner's row."""
+    alias = {}
+    for ip, m in S["miners"].items():
+        name = m.get("name")
+        if name:
+            alias[ip] = name
+            alias.setdefault(str(name).lower(), name)
+    out = {}
+    for name, d in (S["daily"].get("miners") or {}).items():
+        key = alias.get(name) or alias.get(str(name).lower()) or name
+        r = out.setdefault(key, {"best": 0, "at": None, "hashes": 0.0})
+        r["hashes"] += d.get("hashes") or 0
+        if (d.get("best") or 0) > r["best"]:
+            r["best"], r["at"] = d["best"], d.get("at")
+    return out
+
+
 def best_today():
     """Each miner's best share today vs the typical best for the hashes it did (hashes / 2^32)."""
     rows, fleet_best, fleet_hashes, fleet_at, fleet_name = [], 0, 0.0, None, None
     pools = {m.get("name"): m.get("pool") for m in S["miners"].values()}
-    for name, d in (S["daily"].get("miners") or {}).items():
+    for name, d in merged_daily().items():
         typical = d["hashes"] / 2 ** 32
         ratio, tag = luck(d["best"], typical)
         exact = pools.get(name) == "Solo45"  # off Solo45, only new records since restart show

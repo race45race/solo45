@@ -437,6 +437,22 @@ server.miner_ips, server.poll_one, server.record = _real
 check("a slow or offline miner can't hold up the others' polling", _dt < 0.5 and set(_r1) == {"10.9.9.20", "10.9.9.21"}
       and _r2 == ["10.9.9.21"] and "10.9.9.21" in _calls, "(round took %.2f s, then %s)" % (_dt, _r2))
 check("an offline miner is asked once a minute, not every poll", _r3 == [] and _r4 == ["10.9.9.20"])
+_saved_m, _saved_d = dict(server.S["miners"]), server.S["daily"]
+server.S["miners"].clear()
+server.S["miners"]["10.9.9.30"] = {"ip": "10.9.9.30", "name": "S19KPro", "pool": "Harlo"}
+server.S["miners"]["10.9.9.31"] = {"ip": "10.9.9.31", "name": "Bitaxe1", "pool": "Solo45"}
+server.S["daily"] = {"date": "2026-11-10", "since": 1.0, "miners": {
+    "S19KPro": {"best": 5e8, "at": 10.0, "hashes": 4e18}, "S19Kpro": {"best": 9e8, "at": 20.0, "hashes": 1e15},
+    "10.9.9.30": {"best": 0, "at": None, "hashes": 2e14}, "Bitaxe1": {"best": 3e7, "at": 30.0, "hashes": 5e16}}}
+with server.lock:
+    _bt = server.best_today()
+server.S["miners"].clear()
+server.S["miners"].update(_saved_m)
+server.S["daily"] = _saved_d
+_rows = {r["name"]: r for r in _bt["miners"]}
+check("a miner seen under another name or its IP for a moment gets one best-share row",
+      sorted(_rows) == ["Bitaxe1", "S19KPro"] and _rows["S19KPro"]["best"] == 9e8 and _rows["S19KPro"]["at"] == 20.0
+      and abs(_rows["S19KPro"]["typical"] - (4e18 + 1e15 + 2e14) / 2 ** 32) < 1, "(%s)" % sorted(_rows))
 _saved = dict(server.S["miners"])
 server.S["miners"].clear()
 server.S["miners"]["10.9.9.12"] = {"ip": "10.9.9.12", "fails": 9, "first_seen": time.time() - 2 * 86400, "last_ok": time.time() - 2 * 86400}
