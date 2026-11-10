@@ -478,6 +478,14 @@ body.privacy .sensitive { filter: blur(6px); }
       <span class="muted" id="kwhNote"></span>
     </div>
     <div class="ai-foot" style="margin:0 0 14px">Used for the cost per day and per month. The power is what the miners report, which is usually a little below what they draw from the wall.</div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="addIp">Add a miner by IP:</label>
+      <input type="text" id="addIp" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="192.168.1.50" style="width:150px">
+      <button class="btn small" id="addIpBtn" type="button">Add</button>
+      <span class="muted" id="addIpNote" role="status"></span>
+    </div>
+    <div id="extraMiners" style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px"></div>
+    <div class="ai-foot" style="margin:0 0 14px">For a miner on another pool. Miners on Solo45 show up by themselves. The dashboard reads Bitaxe (AxeOS), Braiins OS, Thor OS, MARA and stock Bitmain firmware, and asks the miner first, so only an address that answers like a miner is saved.</div>
     <h2>Share difficulty per miner <span class="muted">only changes how often a miner sends shares, not your chance of a block</span></h2>
     <div class="tablewrap">
       <table>
@@ -581,7 +589,7 @@ body.privacy .sensitive { filter: blur(6px); }
 
 <script>
 const $ = id => document.getElementById(id);
-let state = null, lastTipHash = null;
+let state = null, lastTipHash = null, extraShown = "";
 
 // ---- tabs: Home, Details, Settings (the address keeps the tab, so a reload or a bookmark opens it)
 const TABS = ["home", "details", "settings"];
@@ -725,6 +733,7 @@ function render(s) {
     $("kwhPrice").value = T.kwh_price ?? "";
     $("kwhCur").value = cur();
   }
+  renderExtraMiners();
   // the odds of a block for Solo45: only its own miners count (miners on other pools win for those pools)
   const multi = pools.length > 1 && T.by_pool.Solo45 != null;
   const od = multi ? (T.odds_by_pool || {}).Solo45 : T.odds;
@@ -1166,6 +1175,62 @@ $("kwhSave").addEventListener("click", async () => {
   }
   $("kwhSave").disabled = false;
   $("kwhPrice").blur(); $("kwhCur").blur();
+});
+
+function renderExtraMiners() {
+  const list = (state && state.totals && state.totals.extra_miners) || [];
+  const names = {};
+  for (const m of (state && state.miners) || []) if (m.ip) names[m.ip] = m.name;
+  const key = JSON.stringify([list, list.map(ip => names[ip] || "")]);
+  if (key === extraShown) return;  // don't rebuild (and lose a pending click) on every update
+  extraShown = key;
+  $("extraMiners").innerHTML = list.map(ip =>
+    `<span class="chip" style="display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line, #333);border-radius:999px;padding:3px 4px 3px 10px">`
+    + `${esc(names[ip] && names[ip] !== ip ? names[ip] + " · " : "")}${esc(ip)}`
+    + `<button class="btn small" type="button" data-rm="${esc(ip)}" title="Remove ${esc(ip)} from the dashboard">Remove</button></span>`).join("");
+}
+async function minerPost(body) {
+  const r = await fetch("/api/dash/miner", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (r.ok && state && state.totals) { state.totals.extra_miners = j.miners || []; renderExtraMiners(); }
+  return [r, j];
+}
+$("addIpBtn").addEventListener("click", async () => {
+  const ip = $("addIp").value.trim();
+  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) { $("addIpNote").textContent = "Enter the miner's IP address, like 192.168.1.50."; return; }
+  $("addIpBtn").disabled = true;
+  $("addIpNote").textContent = `Asking ${ip}…`;
+  try {
+    const [r, j] = await minerPost({action: "add", ip});
+    $("addIpNote").textContent = !r.ok ? `Not added: ${j.error || r.status}`
+      : j.already ? `${ip} is already in the list.`
+      : `Added ${j.name || ip}${j.model ? " (" + j.model + ")" : ""}. It shows in the miners table within a few seconds.`;
+    if (r.ok) $("addIp").value = "";
+  } catch (e) {
+    $("addIpNote").textContent = "Not added: " + e.message;
+  }
+  $("addIpBtn").disabled = false;
+});
+$("addIp").addEventListener("keydown", e => { if (e.key === "Enter") $("addIpBtn").click(); });
+$("extraMiners").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-rm]");
+  if (!b) return;
+  const ip = b.dataset.rm;
+  if (b.dataset.armed !== "1") {  // a second click confirms
+    b.dataset.armed = "1"; b.textContent = "Sure?";
+    setTimeout(() => { if (b.isConnected) { b.dataset.armed = ""; b.textContent = "Remove"; } }, 4000);
+    return;
+  }
+  b.disabled = true;
+  try {
+    const [r, j] = await minerPost({action: "remove", ip});
+    $("addIpNote").textContent = !r.ok ? `Not removed: ${j.error || r.status}`
+      : j.connected ? `Removed ${ip} from the list. It stays in the miners table while it's connected to Solo45.`
+      : `Removed ${ip}.`;
+  } catch (err) {
+    $("addIpNote").textContent = "Not removed: " + err.message;
+  }
+  extraShown = ""; renderExtraMiners();
 });
 
 $("refreshSave").addEventListener("click", async () => {

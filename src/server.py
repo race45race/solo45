@@ -1595,6 +1595,7 @@ def snapshot():
                 "kwh_price": CFG["kwh_price"],
                 "currency": CFG["currency"],
                 "timezone": CFG["timezone"],
+                "extra_miners": list(CFG["miners"]),
                 "j_per_th": power / total if total else None,
                 "online": len(up),
                 "count": len(miners),
@@ -1673,6 +1674,65 @@ def save_dash_settings(data):
     if "timezone" in new:
         print("time zone set to %s" % (new["timezone"] or "the server's"), flush=True)
     return 200, {"ok": True, "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "timezone": CFG["timezone"]}
+
+
+MAX_EXTRA_MINERS = 64
+
+
+def lan_ipv4(ip):
+    """A plain IPv4 address in a private (home network) range, not a network/broadcast or loopback one."""
+    if not re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", ip):
+        return False
+    a, b, c, d = (int(x) for x in ip.split("."))
+    if max(a, b, c, d) > 255 or d in (0, 255):
+        return False
+    return a == 10 or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168)
+
+
+def manage_miner(data, probe=None):
+    """Add or remove a miner by IP from the dashboard's Settings: one that isn't on Solo45 (another pool, any
+    firmware the dashboard can read). A new address is asked first and saved only if a miner answers."""
+    probe = probe or poll_one
+    action, ip = data.get("action"), str(data.get("ip") or "").strip()
+    if not lan_ipv4(ip):
+        return 400, {"error": "enter the miner's address on your network, like 192.168.1.50"}
+    if action == "remove":
+        with lock:
+            if ip not in CFG["miners"]:
+                return 404, {"error": "%s isn't in the list" % ip}
+            keep = [x for x in CFG["miners"] if x != ip]
+        save_config({"miners": keep})
+        with lock:
+            CFG["miners"] = keep
+            solo_ips = {w.get("ip") for w in S["solo45"].get("workers") or []}
+            connected = ip in solo_ips or ip in S["ck_workers"]
+            if not connected:
+                S["miners"].pop(ip, None)  # off the table now, unless it's connected to the pool
+                kind_cache.pop(ip, None)
+        print("miner %s removed from the dashboard" % ip, flush=True)
+        return 200, {"ok": True, "miners": keep, "connected": connected}
+    if action != "add":
+        return 400, {"error": "unknown action"}
+    with lock:
+        if ip in CFG["ignore"]:
+            return 400, {"error": "%s is on the ignore list in config.json" % ip}
+        if ip in CFG["miners"]:
+            return 200, {"ok": True, "miners": list(CFG["miners"]), "already": True}
+        if len(CFG["miners"]) >= MAX_EXTRA_MINERS:
+            return 400, {"error": "the list is full (%d miners)" % MAX_EXTRA_MINERS}
+    try:
+        r = probe(ip)
+    except Exception as e:
+        why = "no answer" if unreachable(e) else "it answered, but not like a miner the dashboard can read"
+        return 400, {"error": "no miner found at %s (%s). Check the address and that the miner is on." % (ip, why)}
+    with lock:
+        keep = CFG["miners"] + [ip] if ip not in CFG["miners"] else list(CFG["miners"])
+    save_config({"miners": keep})
+    with lock:
+        CFG["miners"] = keep
+    print("miner %s added to the dashboard (%s, %s)" % (ip, r.get("name"), r.get("model") or r.get("kind")), flush=True)
+    return 200, {"ok": True, "miners": keep, "name": r.get("name"), "model": r.get("model") or r.get("kind"),
+                 "pool": r.get("pool")}
 
 
 def save_config(new, section=None):
@@ -2267,6 +2327,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/voltfloor":
             code, reply = set_volt_floor(data)
+            return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/dash/miner":
+            code, reply = manage_miner(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/settings":
             code, reply = save_dash_settings(data)

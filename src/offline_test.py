@@ -450,6 +450,28 @@ server.S["miners"].clear()
 server.S["miners"].update(_saved_m)
 server.S["daily"] = _saved_d
 _rows = {r["name"]: r for r in _bt["miners"]}
+_saved_cfg, _saved_m = list(server.CFG["miners"]), dict(server.S["miners"])
+def _probe(ip):
+    if ip == "192.168.7.20":
+        return {"name": "NanoTest", "kind": "avalon", "model": "Avalon Nano 3S", "pool": "Other"}
+    raise ValueError("not a miner")
+_a1 = server.manage_miner({"action": "add", "ip": "192.168.7.20"}, probe=_probe)
+_a2 = server.manage_miner({"action": "add", "ip": "192.168.7.20"}, probe=_probe)
+_a3 = server.manage_miner({"action": "add", "ip": "192.168.7.21"}, probe=_probe)
+_bad = [server.manage_miner({"action": "add", "ip": x}, probe=_probe)[0]
+        for x in ("8.8.8.8", "192.168.7.255", "127.0.0.1", "192.168.7", "172.32.0.5", "<b>", "")]
+_on_disk = json.load(open(server.CFG_PATH)).get("miners")
+server.S["miners"]["192.168.7.20"] = {"ip": "192.168.7.20", "name": "NanoTest"}
+_r1 = server.manage_miner({"action": "remove", "ip": "192.168.7.20"})
+_r2 = server.manage_miner({"action": "remove", "ip": "192.168.7.20"})
+_gone = "192.168.7.20" not in server.S["miners"] and json.load(open(server.CFG_PATH)).get("miners") == []
+server.CFG["miners"] = _saved_cfg
+server.S["miners"].clear()
+server.S["miners"].update(_saved_m)
+check("add a miner by IP: asked first, saved only if it answers, LAN addresses only, removable",
+      _a1[0] == 200 and _a1[1]["name"] == "NanoTest" and _a2[1].get("already") and _a3[0] == 400
+      and set(_bad) == {400} and _on_disk == ["192.168.7.20"] and _r1[0] == 200 and _r2[0] == 404 and _gone,
+      "(%s %s %s %s)" % (_a1[0], _a3[0], _bad, _r1[0]))
 check("a miner seen under another name or its IP for a moment gets one best-share row",
       sorted(_rows) == ["Bitaxe1", "S19KPro"] and _rows["S19KPro"]["best"] == 9e8 and _rows["S19KPro"]["at"] == 20.0
       and abs(_rows["S19KPro"]["typical"] - (4e18 + 1e15 + 2e14) / 2 ** 32) < 1, "(%s)" % sorted(_rows))
