@@ -510,7 +510,10 @@ check("only 172.16-31 counts as a private pool address",
       and server.pool_name("172.32.0.1", server.STRATUM_PORT) == "172.32.0.1")
 check("a Braiins miner's limit is its scaled limit when it has one",
       server.live_power_limit({"PowerLimit": 2850, "DynamicPowerScaling": {"ScaledPowerLimit": 3450}}) == 3450
-      and server.live_power_limit({"PowerLimit": 2850}) == 2850 and server.live_power_limit({}) is None)
+      and server.live_power_limit({"PowerLimit": 2850}) == 2850 and server.live_power_limit({}) is None
+      # fixed settings (tuner off): Braiins sends a word, not a dict, and limit 0
+      and server.live_power_limit({"PowerLimit": 0, "DynamicPowerScaling": "Disabled"}) is None
+      and server.live_power_limit({"PowerLimit": 2250, "DynamicPowerScaling": "Disabled"}) == 2250)
 feed_calls = []
 
 

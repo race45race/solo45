@@ -663,8 +663,14 @@ def braiins_metrics(ip, now=None):
 
 
 def live_power_limit(tuner):
-    """The limit the tuner is working to: Braiins' scaled limit when it reports one."""
-    return (tuner.get("DynamicPowerScaling") or {}).get("ScaledPowerLimit") or tuner.get("PowerLimit")
+    """The limit the tuner is working to: Braiins' scaled limit when it reports one.
+
+    With the tuner off ("fixed settings") Braiins sends DynamicPowerScaling as the word "Disabled" and
+    PowerLimit 0, so anything that isn't a dict counts as no scaled limit, and 0 as no limit.
+    """
+    dps = tuner.get("DynamicPowerScaling")
+    scaled = dps.get("ScaledPowerLimit") if isinstance(dps, dict) else None
+    return scaled or tuner.get("PowerLimit") or None
 
 
 def poll_braiins(ip):
