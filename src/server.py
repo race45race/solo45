@@ -845,6 +845,81 @@ def poll_bitmain(ip):
     }
 
 
+def avalon_fields(text):
+    """Canaan packs its readings into one string in "estats": 'OTemp[71] TMax[90] Fan1[1220] MPO[133] ...'."""
+    return dict(re.findall(r"(\w+)\[([^\]]*)\]", text or ""))
+
+
+def avalon_num(fields, key, index=0):
+    try:
+        return float(fields.get(key, "").replace("%", "").split()[index])
+    except (ValueError, IndexError):
+        return None
+
+
+AVALON_MODES = {"0": "Low", "1": "Medium", "2": "High"}
+
+
+def poll_avalon(ip):
+    """Canaan Avalon (e.g. the Avalon Nano 3S): CGMiner API on port 4028 like Braiins OS, but the
+    temperatures, fan and watts are only in the "estats" string. Read-only, like the others."""
+    version = (cgminer(ip, "version").get("VERSION") or [{}])[0]
+    prod = str(version.get("PROD") or version.get("MODEL") or "")
+    if "avalon" not in prod.lower():
+        raise ValueError("not a Canaan Avalon")
+    summ = cgminer(ip, "summary")["SUMMARY"][0]
+    pools = cgminer(ip, "pools").get("POOLS", [])
+    try:
+        stats = cgminer(ip, "estats").get("STATS", [])
+    except Exception:
+        stats = []
+    mm = next((v for st in stats for k, v in st.items() if k.startswith("MM ID") and isinstance(v, str)), "")
+    f = avalon_fields(mm)
+    chip_temps = [float(x) for k, v in f.items() if k.startswith("PVT_T") for x in v.split() if x.lstrip("-").isdigit()]
+    chip_temps = [t for t in chip_temps if -40 < t < 150]
+    outlet = avalon_num(f, "OTemp")
+    power = avalon_num(f, "MPO") or (avalon_num(f, "PS", -1) if f.get("PS") else None)
+    active = active_pool(pools)
+    lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
+    host, port, user = "", "", ""
+    if active:
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        user = active.get("User", "")
+    return {
+        "kind": "avalon",
+        "name": user.split(".", 1)[1] if "." in user else ip,
+        "model": prod.replace("Nano3s", "Nano 3S"),
+        "ths_now": (summ.get("MHS 5s") or 0) / 1e6,
+        "ths": (summ.get("MHS 1m") or 0) / 1e6,
+        "ths_long": (summ.get("MHS 15m") or summ.get("MHS av") or 0) / 1e6,
+        "expected_ths": None,
+        "temp": avalon_num(f, "TAvg") or (sum(chip_temps) / len(chip_temps) if chip_temps else None),  # what it regulates
+        "temp_max": max(chip_temps) if chip_temps else avalon_num(f, "TMax"),
+        "temp2": outlet if outlet is not None and outlet > -100 else None,
+        "temp_target": avalon_num(f, "TarT"),
+        "power": power if power and power > 0 else None,
+        "power_source": "miner" if power else None,
+        "fan": avalon_num(f, "FanR"),
+        "fan_rpm": avalon_num(f, "Fan1"),
+        "mode": AVALON_MODES.get(f.get("WORKMODE", "")),
+        "best": as_num(summ.get("Best Share")),
+        "best_session": None,
+        "accepted": summ.get("Accepted"),
+        "rejected": summ.get("Rejected"),
+        "hw_errors": summ.get("Hardware Errors"),
+        "height": None,
+        "uptime": summ.get("Elapsed"),
+        "pool": pool_name(host, port),
+        "on_fallback": bool(active) and active.get("Priority", 0) != lowest_prio,
+        "last_share": active.get("Last Share Time") if active and isinstance(active.get("Last Share Time"), (int, float)) else None,
+        "block_found": (summ.get("Found Blocks") or 0) > 0,
+        "version": version.get("LVERSION"),
+        "pools": [{"url": p.get("URL"), "status": p.get("Status"),
+                   "active": p is active, "priority": p.get("Priority")} for p in pools],
+    }
+
+
 thor_cache = {}  # ip -> device info, uptime and recent hashrate samples (info and uptime are read once a minute)
 
 
@@ -898,8 +973,8 @@ def poll_thor(ip):
     }
 
 
-POLLERS = {"bitaxe": poll_bitaxe, "mara": poll_mara, "bitmain": poll_bitmain, "braiins": poll_braiins,
-           "thor": poll_thor}  # MARA and stock Bitmain before Braiins: their APIs look alike
+POLLERS = {"bitaxe": poll_bitaxe, "mara": poll_mara, "bitmain": poll_bitmain, "avalon": poll_avalon,
+           "braiins": poll_braiins, "thor": poll_thor}  # MARA, stock Bitmain and Avalon before Braiins: their APIs look alike
 
 
 def unreachable(e):
@@ -1371,7 +1446,7 @@ def braiins_work_loop():
     last = {}
     while True:
         braiins_wake.clear()  # a block arriving from here on wakes the wait below at once
-        for ip, kind in [(ip, k) for ip, k in list(kind_cache.items()) if k in ("braiins", "mara", "bitmain") and ip not in CFG["ignore"]]:
+        for ip, kind in [(ip, k) for ip, k in list(kind_cache.items()) if k in ("braiins", "mara", "bitmain", "avalon") and ip not in CFG["ignore"]]:
             try:
                 pools = cgminer(ip, "pools", timeout=1).get("POOLS", [])
                 active = active_pool(pools, guess=kind in ("mara", "bitmain"))
@@ -1407,7 +1482,9 @@ def miner_status(m, tip):
     if m.get("dead_domains") and m.get("domains"):
         return "warn", "%d of %d chip domains stopped" % (m["dead_domains"], len(m["domains"]))
     if m.get("temp") and ((m["kind"] in ("bitaxe", "thor") and m["temp"] >= 70) or
-                          (m["kind"] in ("braiins", "mara", "bitmain") and m["temp"] >= 85)):
+                          (m["kind"] in ("braiins", "mara", "bitmain") and m["temp"] >= 85) or
+                          (m["kind"] == "avalon" and (m["temp"] >= (m.get("temp_target") or 90) + 5 or
+                                                      (m.get("temp_max") or 0) >= 105))):
         return "warn", "Running hot"
     exp = m.get("expected_ths")
     if exp and m.get("ths") is not None and m["ths"] < 0.6 * exp and (m.get("uptime") or 0) > 300:

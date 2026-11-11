@@ -396,6 +396,36 @@ server.http_json, server.cgminer = _real_http, _real_cgminer
 check("stock Bitmain firmware is read in TH/s, text values and all", _b["kind"] == "bitmain" and _b["name"] == "S17Pro"
       and abs(_b["ths"] - 38.53788) < 1e-6 and abs(_b["ths_long"] - 46.11162) < 1e-6 and _b["temp"] == 53 and _b["temp2"] == 40
       and _b["pool"] == "Solo45" and _not_stock, str({k: _b.get(k) for k in ("kind", "name", "ths", "temp", "temp2", "pool")}))
+_nano = {
+    "version": {"VERSION": [{"CGMiner": "4.11.1", "API": "3.7", "PROD": "Avalon Nano3s", "MODEL": "Nano3s",
+                             "LVERSION": "25061101_97e23a6"}]},
+    "summary": {"STATUS": [{"Description": "cgminer 4.11.1"}],
+                "SUMMARY": [{"Elapsed": 98, "MHS 5s": 5403736.65, "MHS 1m": 5198028.64, "MHS 15m": 5084020.0,
+                             "Accepted": 11, "Rejected": 0, "Hardware Errors": 0, "Best Share": 92195, "Found Blocks": 0}]},
+    "pools": {"POOLS": [{"URL": "stratum+tcp://192.168.1.5:3333", "Status": "Alive", "Priority": 0, "User": "bc1qtest.Nano3S",
+                         "Stratum Active": True, "Last Share Time": 1794433885, "Getworks": 5}]},
+    "estats": {"STATS": [{"STATS": 0, "ID": "AVALON0", "MM ID0": "Ver[Nano3s-25061101] ITemp[-273] OTemp[71] TMax[90] TAvg[86] "
+                          "TarT[90] Fan1[1220] FanR[28%] PS[0 0 27470 4 0 3652 130] WORKMODE[2] MPO[133] "
+                          "PVT_T0[ 83  84  87  86  88  86  84  84  90  88  87  83]"}]},
+}
+server.cgminer = lambda ip, cmd, timeout=3: (_nano if ip == "10.9.9.16" else _bos)[cmd]
+server.http_json = _fake_http
+server.kind_cache.pop("10.9.9.16", None)
+_a = server.poll_one("10.9.9.16")
+_not_avalon = None
+try:
+    server.poll_avalon("10.9.9.17")
+except ValueError:
+    _not_avalon = True
+server.http_json, server.cgminer = _real_http, _real_cgminer
+_a_ok = server.miner_status(dict(_a, ok=True, last_share=None), None)
+_a_hot = server.miner_status(dict(_a, ok=True, last_share=None, temp=96), None)
+_a_hotchip = server.miner_status(dict(_a, ok=True, last_share=None, temp_max=106), None)
+check("Canaan Avalon (Nano 3S) is read as Avalon, with chip temp, watts, fan and mode from estats",
+      _a["kind"] == "avalon" and _a["name"] == "Nano3S" and _a["model"] == "Avalon Nano 3S" and abs(_a["ths"] - 5.19802864) < 1e-6
+      and _a["temp"] == 86 and _a["temp_max"] == 90 and _a["temp2"] == 71 and _a["power"] == 133 and _a["fan"] == 28 and _a["mode"] == "High"
+      and _a["pool"] == "Solo45" and _not_avalon and _a_ok[1] == "Hashing" and _a_hot[1] == "Running hot" and _a_hotchip[1] == "Running hot",
+      str({k: _a.get(k) for k in ("kind", "name", "model", "ths", "temp", "temp2", "power", "fan", "mode", "pool")}) + str(_a_ok) + str(_a_hot))
 _ok = True
 try:
     server.miner_status({"name": "x", "kind": "braiins", "temp": 50, "ths": 1, "last_share": "0:00:01", "ok": True}, None)
