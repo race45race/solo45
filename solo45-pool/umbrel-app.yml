@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.57"
+version: "0.1.58"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  Share difficulty per miner (Settings) now has an All miners row: set seconds per share, a fixed difficulty or automatic for every miner on Solo45 at once. Also new since 0.1.55: Avalon controls for Canaan Avalon miners (fan auto, fixed, or hold a temperature; work mode). Your settings and history are kept.
+  A Bitaxe that went into overheat safe mode is now flagged on the Miners list (its fan left on a fixed 100% and its settings lowered), with the settings to put back. Settings backups now include the Avalon fan settings, and the tab bar no longer shows a tiny scrollbar. Your settings and history are kept.
 
 developer: race45race
 website: https://github.com/race45race/solo45
