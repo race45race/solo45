@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.56"
+version: "0.1.57"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  New Avalon controls for Canaan Avalon miners (like the Avalon Nano 3S), on the Details tab: set the fan to the miner's own auto, a fixed speed, or hold the chips at a temperature you pick (65-80 °C; the dashboard adjusts the fan once a minute), and switch the work mode between Low, Medium and High. Your settings and history are kept.
+  Share difficulty per miner (Settings) now has an All miners row: set seconds per share, a fixed difficulty or automatic for every miner on Solo45 at once. Also new since 0.1.55: Avalon controls for Canaan Avalon miners (fan auto, fixed, or hold a temperature; work mode). Your settings and history are kept.
 
 developer: race45race
 website: https://github.com/race45race/solo45
