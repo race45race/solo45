@@ -595,6 +595,10 @@ def poll_bitaxe(ip):
         "err_pct": i.get("errorPercentage"),
         "asic_errors": asic_error_count(i),
         "domains": asic_domains(i),
+        # overheat safe mode: AxeOS stops mining, sets the fan to a fixed 100% and comes back with lower settings
+        "fan_auto": i.get("autofanspeed"),
+        "fan_manual": i.get("manualFanSpeed"),
+        "overheat": bool(i.get("overheat_mode")),
     }
 
 
@@ -1616,11 +1620,27 @@ def braiins_work_loop():
 
 # ------------------------------------------------------------ derived state
 
+def settings_before_trip(m):
+    """The frequency and voltage a Bitaxe had before its latest change, when that change led to the settings it
+    runs now (an overheat trip lowers them by itself). None when the history doesn't show it."""
+    last = next((e for e in reversed(tuning_history) if e.get("name") == m.get("name")), None)
+    if last and (last["to"]["freq"], last["to"]["mv"]) == (m.get("frequency"), m.get("core_mv")):
+        return last["from"]
+    return None
+
+
 def miner_status(m, tip):
     if not m.get("ok", False) and m.get("fails", 0) >= 2:
         return "offline", "Not responding"
     if m.get("on_fallback"):
         return "warn", "On fallback pool"
+    if m.get("kind") == "bitaxe":
+        if m.get("overheat"):
+            return "warn", "Overheat safe mode: mining stopped while it cools"
+        if m.get("fan_auto") == 0 and (m.get("fan_manual") or 0) >= 100:
+            was = settings_before_trip(m)
+            return "warn", "Fan stuck at 100%% after an overheat trip%s; then turn auto fan back on" % (
+                ": put %s MHz / %s mV back" % (was["freq"], was["mv"]) if was else "")
     if m.get("dead_domains") and m.get("domains"):
         return "warn", "%d of %d chip domains stopped" % (m["dead_domains"], len(m["domains"]))
     if m.get("temp") and ((m["kind"] in ("bitaxe", "thor") and m["temp"] >= 70) or
@@ -2336,8 +2356,26 @@ def make_backup():
             "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
             "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
             "volt_floors": json.loads(json.dumps(volt_floors)),
+            "avalon_fan": dict(CFG.get("avalon_fan") or {}), "avalon_target": dict(CFG.get("avalon_target") or {}),
         },
     }
+
+
+def restore_avalon(fans, targets):
+    """The Avalon fan choices from a backup, with the same limits as the Avalon card. Returns how many miners."""
+    ip_ok = lambda ip: bool(re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", str(ip)))
+    fans = {ip: int(v) for ip, v in (fans or {}).items() if ip_ok(ip) and isinstance(v, int) and not isinstance(v, bool)
+            and AVALON_FAN_MIN <= v <= 100} if isinstance(fans, dict) else {}
+    targets = {ip: int(v) for ip, v in (targets or {}).items() if ip_ok(ip) and isinstance(v, int) and not isinstance(v, bool)
+               and AVALON_TARGET_RANGE[0] <= v <= AVALON_TARGET_RANGE[1]} if isinstance(targets, dict) else {}
+    fans = {ip: v for ip, v in fans.items() if ip not in targets}  # one choice per miner: holding a temperature wins
+    if not fans and not targets:
+        return 0
+    save_config({"avalon_fan": fans, "avalon_target": targets})
+    with lock:
+        CFG["avalon_fan"], CFG["avalon_target"] = fans, targets
+        avalon_ctl.clear()
+    return len(set(fans) | set(targets))
 
 
 def restore_backup(data):
@@ -2364,6 +2402,9 @@ def restore_backup(data):
         n = restore_volt_floors(dash["volt_floors"])
         if n:
             done.append("voltage floors for %d miner%s" % (n, "s"[n == 1:]))
+    av = restore_avalon(dash.get("avalon_fan"), dash.get("avalon_target"))
+    if av:
+        done.append("Avalon fan settings for %d miner%s" % (av, "s"[av == 1:]))
     if dash.get("notify"):
         step("phone alerts", save_notify_settings({k: v for k, v in dash["notify"].items() if k in BACKUP_NOTIFY_KEYS}))
     if data.get("pool"):

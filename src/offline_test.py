@@ -1036,6 +1036,27 @@ check("dashboard: changes from another website or app are refused, the dashboard
       _own and _typed and not _cross and not _app and _old_own and _old_fwd and not _old_cross and not _null and _script,
       "(own %s, cross %s, app %s, old own %s, old fwd %s, old cross %s, null %s, script %s)"
       % (_own, _cross, _app, _old_own, _old_fwd, _old_cross, _null, _script))
+# v0.1.58: overheat safe mode on a Bitaxe, and Avalon fan settings in the backup
+server.tuning_history.append({"name": "BitaxeTrip", "at": 1, "from": {"freq": 800, "mv": 1205}, "to": {"freq": 700, "mv": 1105},
+                              "before": None, "after": None})
+_trip = dict(kind="bitaxe", ok=True, name="BitaxeTrip", frequency=700, core_mv=1105, fan_auto=0, fan_manual=100, overheat=False)
+_st_trip = server.miner_status(_trip, None)
+_st_hot = server.miner_status(dict(_trip, overheat=True), None)
+_st_auto = server.miner_status(dict(_trip, fan_auto=1), None)
+_st_moved = server.miner_status(dict(_trip, frequency=650), None)
+server.tuning_history.pop()
+_av_before = (dict(server.CFG.get("avalon_fan") or {}), dict(server.CFG.get("avalon_target") or {}))
+_n_av = server.restore_avalon({"10.9.9.21": 40, "10.9.9.22": 50, "x": 50, "10.9.9.23": 5}, {"10.9.9.22": 72, "10.9.9.24": 99})
+_av_after = (dict(server.CFG.get("avalon_fan") or {}), dict(server.CFG.get("avalon_target") or {}))
+_src = open(os.path.join(os.path.dirname(os.path.abspath(server.__file__)), "server.py"), encoding="utf-8").read()
+server.restore_avalon(*_av_before) or (server.save_config({"avalon_fan": _av_before[0], "avalon_target": _av_before[1]}),
+                                       server.CFG.update(avalon_fan=_av_before[0], avalon_target=_av_before[1]))
+check("Bitaxe overheat safe mode is flagged with the settings to put back; Avalon fan settings restore from a backup",
+      _st_trip[0] == "warn" and "800 MHz / 1205 mV" in _st_trip[1] and "Overheat safe mode" in _st_hot[1]
+      and _st_auto[1] != _st_trip[1] and "Fan stuck" in _st_moved[1] and "MHz" not in _st_moved[1]
+      and _n_av == 2 and _av_after == ({"10.9.9.21": 40}, {"10.9.9.22": 72})
+      and '"avalon_fan": dict(CFG.get("avalon_fan")' in _src,
+      "(trip %s, hot %s, auto %s, moved %s, restored %s %s)" % (_st_trip, _st_hot[1], _st_auto[1], _st_moved[1], _n_av, _av_after))
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)
