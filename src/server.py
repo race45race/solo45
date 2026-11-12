@@ -1276,6 +1276,37 @@ DOMAIN_DEAD_S = 600  # a chip domain at 0 for 10 minutes while the others hash h
 domain_zero_since = {}  # ip -> {domain index: when it first read 0}
 
 
+REJ_WINDOW_S = 3600     # reject rate over the last hour...
+REJ_MIN_SPAN_S = 900    # ...once at least 15 minutes of counts are in
+REJ_MIN_SHARES = 50     # and enough shares that one or two rejects don't read as a high rate
+REJ_SAMPLE_S = 60       # one sample a minute is plenty
+REJ_WARN = 0.02         # over 2% rejected: something is wrong (stale work, a bad pool server, a lagging miner)
+rej_hist = {}           # ip -> [(time, accepted, rejected)]
+
+
+def track_rejects(ip, result, t):
+    """The share of a miner's results its pool rejected over the last hour, from the miner's own counters, so it
+    works whatever pool it is on (lock held). The counters start again when the miner restarts."""
+    acc, rej = result.get("accepted"), result.get("rejected")
+    ok = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+    if not ok(acc) or not ok(rej):
+        result["rej_rate"] = None
+        return
+    hist = rej_hist.setdefault(ip, [])
+    if hist and (acc < hist[-1][1] or rej < hist[-1][2]):
+        hist.clear()  # restarted: its counts began again
+    if not hist or t - hist[-1][0] >= REJ_SAMPLE_S:
+        hist.append((t, acc, rej))
+    while len(hist) > 1 and hist[1][0] <= t - REJ_WINDOW_S:
+        hist.pop(0)  # keep one sample from just before the window, as its starting point
+    t0, a0, r0 = hist[0]
+    da, dr = acc - a0, rej - r0
+    if t - t0 >= REJ_MIN_SPAN_S and da + dr >= REJ_MIN_SHARES:
+        result["rej_rate"], result["rej_window_s"] = dr / (da + dr), int(min(t - t0, REJ_WINDOW_S))
+    else:
+        result["rej_rate"] = None
+
+
 def track_domains(ip, result, t):
     """Count a Bitaxe's chip domains that have stopped hashing (lock held). At the edge of stability a domain can
     stop and stay stopped until the miner restarts, costing a quarter of its hashrate per domain."""
@@ -1498,6 +1529,7 @@ def record(ip, result, err):
             track_daily_best(ip, result, t)
             track_error_rate(ip, result, t)
             track_domains(ip, result, t)
+            track_rejects(ip, result, t)
             track_volt_floor(ip, result, t)
             m.update(result)
             m["fails"], m["ok"], m["last_ok"], m["error"] = 0, True, t, None
@@ -1648,6 +1680,8 @@ def miner_status(m, tip):
                           (m["kind"] == "avalon" and (m["temp"] >= (m.get("temp_target") or 90) + 5 or
                                                       (m.get("temp_max") or 0) >= 105))):
         return "warn", "Running hot"
+    if (m.get("rej_rate") or 0) > REJ_WARN:
+        return "warn", "%.1f%% of shares rejected (last %d min)" % (100 * m["rej_rate"], (m.get("rej_window_s") or 3600) // 60)
     exp = m.get("expected_ths")
     if exp and m.get("ths") is not None and m["ths"] < 0.6 * exp and (m.get("uptime") or 0) > 300:
         return "warn", "Hashrate low"

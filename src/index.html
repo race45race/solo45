@@ -975,7 +975,8 @@ function renderMiners(s) {
         : fmtDiff(m.best);
       const blk0 = m.height ? (tip && m.height > tip.height ? `<span style="color:var(--ok)">✓</span> <span class="num">${m.height}</span>` : `<span class="hot num">${m.height}</span>`) : `<span class="faint">—</span>`;
       const blk = m.height_src === "pool" ? `<span title="The block of its latest share, as Solo45 saw it (this miner doesn't report the block it's on)">${blk0}</span>` : blk0;
-      const rej = m.rejected ? `<span class="faint"> / ${m.rejected}</span>` : "";
+      const rej = (m.rejected ? `<span class="faint"> / ${m.rejected}</span>` : "")
+        + (m.rej_rate != null ? `<div class="msub${m.rej_rate > 0.02 ? " hot" : ""}">${(m.rej_rate * 100).toFixed(m.rej_rate < 0.01 ? 2 : 1)}% rejected, last ${Math.round((m.rej_window_s || 3600) / 60)} min</div>` : "");
       const ref = m.ths_long || m.ths;  // the Hexes' older firmware has no 10-minute average
       const seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
       const open = openMiners.has(m.name);

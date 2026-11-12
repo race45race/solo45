@@ -1057,6 +1057,28 @@ check("Bitaxe overheat safe mode is flagged with the settings to put back; Avalo
       and _n_av == 2 and _av_after == ({"10.9.9.21": 40}, {"10.9.9.22": 72})
       and '"avalon_fan": dict(CFG.get("avalon_fan")' in _src,
       "(trip %s, hot %s, auto %s, moved %s, restored %s %s)" % (_st_trip, _st_hot[1], _st_auto[1], _st_moved[1], _n_av, _av_after))
+# v0.1.59: reject rate over the last hour, from the miner's own counters
+def _rr(seq):
+    server.rej_hist.pop("10.9.9.41", None)
+    out = None
+    for tt, a, r in seq:
+        res = {"accepted": a, "rejected": r}
+        server.track_rejects("10.9.9.41", res, tt)
+        out = res
+    return out
+_r_hi = _rr([(0, 0, 0), (600, 500, 10), (1200, 1000, 30)])               # 30 of 1030 = 2.9%
+_r_lo = _rr([(0, 0, 0), (1200, 1000, 5)])                                 # 0.5%
+_r_few = _rr([(0, 0, 0), (1200, 30, 3)])                                  # too few shares to judge
+_r_new = _rr([(0, 5000, 400), (1200, 6000, 401), (1300, 20, 0)])         # restarted: counts began again
+_r_old = _rr([(0, 0, 0), (2000, 100, 50), (6000, 2000, 52)])             # the old burst has left the hour
+_st_rej = server.miner_status(dict(kind="braiins", ok=True, name="X", rej_rate=_r_hi["rej_rate"], rej_window_s=_r_hi.get("rej_window_s")), None)
+_st_low = server.miner_status(dict(kind="braiins", ok=True, name="X", rej_rate=_r_lo["rej_rate"]), None)
+server.rej_hist.pop("10.9.9.41", None)
+check("reject rate over the last hour: warns above 2%, ignores few shares, restarts and old bursts",
+      abs(_r_hi["rej_rate"] - 30 / 1030) < 1e-9 and _st_rej[0] == "warn" and "2.9% of shares rejected (last 20 min)" in _st_rej[1]
+      and abs(_r_lo["rej_rate"] - 5 / 1005) < 1e-9 and _st_low[0] == "ok" and _r_few["rej_rate"] is None
+      and _r_new["rej_rate"] is None and abs(_r_old["rej_rate"] - 2 / 1902) < 1e-9,
+      "(hi %s %s, lo %s %s, few %s, restart %s, old %s)" % (_r_hi["rej_rate"], _st_rej, _r_lo["rej_rate"], _st_low, _r_few["rej_rate"], _r_new["rej_rate"], _r_old["rej_rate"]))
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)
