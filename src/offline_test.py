@@ -426,6 +426,45 @@ check("Canaan Avalon (Nano 3S) is read as Avalon, with chip temp, watts, fan and
       and _a["temp"] == 86 and _a["temp_max"] == 90 and _a["temp2"] == 71 and _a["power"] == 133 and _a["fan"] == 28 and _a["mode"] == "High"
       and _a["pool"] == "Solo45" and _not_avalon and _a_ok[1] == "Hashing" and _a_hot[1] == "Running hot" and _a_hotchip[1] == "Running hot",
       str({k: _a.get(k) for k in ("kind", "name", "model", "ths", "temp", "temp2", "power", "fan", "mode", "pool")}) + str(_a_ok) + str(_a_hot))
+_sent = []
+_send = lambda ip, key, value: (_sent.append((ip, key, value)) or (True, "ASC 0 set OK"))
+_v_fan = server.set_avalon({"ip": "10.9.9.16", "fan": 30}, send=_send)
+_v_saved = server.CFG.get("avalon_fan", {}).get("10.9.9.16")
+_v_low = server.set_avalon({"ip": "10.9.9.16", "fan": 10}, send=_send)[0]
+_v_notav = server.set_avalon({"ip": "10.9.9.17", "fan": 30}, send=_send)[0]
+_v_mode = server.set_avalon({"ip": "10.9.9.16", "mode": 1}, send=_send)
+_v_badmode = server.set_avalon({"ip": "10.9.9.16", "mode": 5}, send=_send)[0]
+_v_refuse = server.set_avalon({"ip": "10.9.9.16", "fan": 40}, send=lambda ip, k, v: (False, "nope"))[0]
+_v_kept = server.CFG.get("avalon_fan", {}).get("10.9.9.16")  # a refused change doesn't replace the saved one
+_real_cmd = server.avalon_cmd
+server.avalon_cmd = _send
+_T = server.avalon_ctl["10.9.9.16"]["at"]
+_n0 = len(_sent)
+# fixed 30 %: after a restart the miner is back on its own auto fan (15 %), so 30 % is sent again, once a minute
+_f1 = server.avalon_fan_control("10.9.9.16", 59, 15, now=_T + 61)
+_f2 = server.avalon_fan_control("10.9.9.16", 59, 15, now=_T + 62)
+_f3 = server.avalon_fan_control("10.9.9.16", 59, 60, now=_T + 130)   # faster than asked: left alone
+_fixed_sent = _sent[_n0:]
+# hold 72 °C: chips at 59 with the fan at 30 % -> less fan, step by step, down to the 15 % minimum; hot -> more
+_v_t = server.set_avalon({"ip": "10.9.9.16", "target": 72}, send=_send)
+_v_t_saved = (server.CFG.get("avalon_target", {}).get("10.9.9.16"), server.CFG.get("avalon_fan", {}).get("10.9.9.16"))
+_v_t_bad = server.set_avalon({"ip": "10.9.9.16", "target": 90}, send=_send)[0]
+_steps = [server.avalon_fan_control("10.9.9.16", tc, fn, now=_T + 1000 + 61 * i)
+          for i, (tc, fn) in enumerate([(59, 30), (59, 20), (59, 15), (71, 15), (75, 15), (80, 20), (86, 30), (70, 100)])]
+_v_auto = server.set_avalon({"ip": "10.9.9.16", "fan": "auto"}, send=_send)
+_v_after_auto = (server.CFG.get("avalon_fan", {}).get("10.9.9.16"), server.CFG.get("avalon_target", {}).get("10.9.9.16"))
+_v_idle = server.avalon_fan_control("10.9.9.16", 80, 15, now=_T + 5000)  # auto: the dashboard leaves the fan alone
+server.avalon_cmd = _real_cmd
+check("Avalon controls: auto / fixed 15-100% / hold 60-85 °C, work mode 0-2, only for Avalons; the fan choice is kept in force",
+      _v_fan == (200, {"ok": True, "fan": 30}) and _v_saved == 30 and _v_low == 400 and _v_notav == 400
+      and _v_mode == (200, {"ok": True, "mode": "Medium"}) and _v_badmode == 400 and _v_refuse == 502 and _v_kept == 30
+      and _f1 == 30 and _f2 is None and _f3 is None and _fixed_sent == [("10.9.9.16", "fan-spd", 30)]
+      and _v_t == (200, {"ok": True, "fan": "hold 72 °C"}) and _v_t_saved == (72, None) and _v_t_bad == 400
+      and _steps == [20, 15, None, None, 20, 30, 100, 95]
+      and _v_auto == (200, {"ok": True, "fan": "auto"}) and _v_after_auto == (None, None) and _v_idle is None
+      and ("10.9.9.16", "fan-spd", -1) in _sent and ("10.9.9.16", "workmode", "set,1") in _sent,
+      str([_v_fan, _v_saved, _v_low, _v_notav, _v_mode, _v_badmode, _v_refuse, _v_kept, _f1, _f2, _f3, _fixed_sent,
+           _v_t, _v_t_saved, _v_t_bad, _steps, _v_auto, _v_after_auto, _v_idle]))
 _ok = True
 try:
     server.miner_status({"name": "x", "kind": "braiins", "temp": 50, "ths": 1, "last_share": "0:00:01", "ok": True}, None)

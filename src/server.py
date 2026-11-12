@@ -55,6 +55,8 @@ CFG = {
     "ckpool_log": os.environ.get("GOBRRR_LOG") or "",  # a ckpool-based pool's log (e.g. Go Brrr), for its timings
     "miners": [],   # extra miner IPs, on top of those connected to Solo45 (or found in a ckpool log)
     "ignore": [],   # miner IPs to leave out entirely
+    "avalon_fan": {},     # Avalon IP -> fixed fan % set on the dashboard
+    "avalon_target": {},  # Avalon IP -> chip temperature (°C) the dashboard holds by adjusting the fan
     "pools": {"23334": "Datum", "21420": "Go Brrr", "21422": "Go Brrr (high diff)", "3333": "Solo45"},
     "poll_seconds": 5,
     "solo45_api": SOLO45 + "/api",
@@ -886,6 +888,9 @@ def poll_avalon(ip):
         hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
         host, port = hp[0], (hp[1] if len(hp) > 1 else "")
         user = active.get("User", "")
+    fan_now = avalon_num(f, "FanR")
+    avg_temp = avalon_num(f, "TAvg") or (sum(chip_temps) / len(chip_temps) if chip_temps else None)
+    avalon_fan_control(ip, avg_temp, fan_now)
     return {
         "kind": "avalon",
         "name": user.split(".", 1)[1] if "." in user else ip,
@@ -917,7 +922,144 @@ def poll_avalon(ip):
         "version": version.get("LVERSION"),
         "pools": [{"url": p.get("URL"), "status": p.get("Status"),
                    "active": p is active, "priority": p.get("Priority")} for p in pools],
+        "mode_num": int(f["WORKMODE"]) if f.get("WORKMODE", "").isdigit() else None,
+        "fan_setting": (CFG.get("avalon_fan") or {}).get(ip),      # fixed %, or None
+        "fan_target": (CFG.get("avalon_target") or {}).get(ip),    # held chip °C, or None (None + None = auto)
     }
+
+
+AVALON_FAN_MIN = 15    # the Nano 3S's own lowest fan speed
+AVALON_STEP_S = 60     # the fan is changed at most once a minute: the chips need time to follow
+AVALON_HOT_C = 85      # holding a temperature: at this chip average the fan goes straight to 100 %
+AVALON_TARGET_RANGE = (60, 85)
+avalon_ctl = {}        # ip -> {"pct": the fan % the dashboard last asked for, "at": when}
+
+
+def avalon_cmd(ip, key, value, timeout=4):
+    """Change one Avalon setting through its CGMiner API ("ascset"). Returns (ok, the miner's message)."""
+    with socket.create_connection((ip, 4028), timeout=timeout) as s:
+        s.sendall(json.dumps({"command": "ascset", "parameter": "0,%s,%s" % (key, value)}).encode())
+        data = b""
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    text = data.decode("utf-8", "replace").strip("\x00 \n")
+    try:
+        st = (json.loads(text).get("STATUS") or [{}])[0]
+        return st.get("STATUS") == "S", str(st.get("Msg") or text[:120])
+    except (ValueError, AttributeError, IndexError, TypeError):
+        return "STATUS=S" in text, text[:120]
+
+
+def avalon_fan_control(ip, temp, fan_now, now=None):
+    """Keeps a dashboard fan choice in force (called on every poll of the miner).
+    Fixed %: sent again when the fan runs slower than asked, e.g. after the miner restarted on its own auto fan.
+    Hold °C: once a minute, 5 % more fan when the chip average is over the target (10 % when over by more than
+    4 °C, 100 % at 85 °C), 5-10 % less when under it, never below the miner's 15 % minimum. A fan the miner sped
+    up itself (faster than asked) is left alone. Returns the % it sent, or None."""
+    now = time.time() if now is None else now
+    fixed = (CFG.get("avalon_fan") or {}).get(ip)
+    target = (CFG.get("avalon_target") or {}).get(ip)
+    if not fixed and not target:
+        avalon_ctl.pop(ip, None)
+        return None
+    c = avalon_ctl.setdefault(ip, {"pct": int(fixed or fan_now or 30), "at": 0})
+    if now - c["at"] < AVALON_STEP_S:
+        return None
+    pct = c["pct"]
+    if fixed:
+        pct = int(fixed)
+    elif temp is not None:
+        err = temp - target
+        if temp >= AVALON_HOT_C:
+            pct = 100
+        elif err > 1.5:
+            pct += 5 if err <= 4 else 10
+        elif err < -1.5:
+            pct -= 5 if err >= -4 else 10
+        pct = max(AVALON_FAN_MIN, min(100, pct))
+    slow = fan_now is not None and fan_now < pct - 2
+    if pct == c["pct"] and not slow and c["at"]:
+        return None
+    c["at"] = now
+    try:
+        ok, msg = avalon_cmd(ip, "fan-spd", pct)
+    except OSError as e:
+        print("Avalon %s: could not set the fan: %s" % (ip, e), flush=True)
+        return None
+    if ok:
+        c["pct"] = pct
+    print("Avalon %s: fan %s%% -> %d%% (%s%s): %s" % (ip, "?" if fan_now is None else int(fan_now), pct,
+          "fixed" if fixed else "holding %s °C, chips %s °C" % (target, temp), ", it had slowed" if slow else "", msg), flush=True)
+    return pct if ok else None
+
+
+def set_avalon(data, send=None):
+    """Fan (auto, a fixed 15-100 %, or a chip temperature to hold) and work mode (0 Low, 1 Medium, 2 High) of an
+    Avalon miner the dashboard already reads. The fan choice is saved and kept in force by avalon_fan_control."""
+    send = send or avalon_cmd
+    ip = str(data.get("ip") or "").strip()
+    if not lan_ipv4(ip):
+        return 400, {"error": "unknown miner address"}
+    with lock:
+        kind = kind_cache.get(ip)
+    if kind != "avalon":
+        return 400, {"error": "%s isn't an Avalon miner the dashboard reads" % ip}
+    done = {}
+    try:
+        if "fan" in data or "target" in data:
+            fixed = target = None
+            if "target" in data:
+                try:
+                    target = int(data["target"])
+                except (TypeError, ValueError):
+                    target = -1
+                if not AVALON_TARGET_RANGE[0] <= target <= AVALON_TARGET_RANGE[1]:
+                    return 400, {"error": "the temperature to hold must be %d to %d °C" % AVALON_TARGET_RANGE}
+            elif data["fan"] not in ("auto", None, -1, "-1"):
+                try:
+                    fixed = int(data["fan"])
+                except (TypeError, ValueError):
+                    return 400, {"error": "the fan speed must be a number or auto"}
+                if not AVALON_FAN_MIN <= fixed <= 100:
+                    return 400, {"error": "the fan speed must be %d to 100%%" % AVALON_FAN_MIN}
+            if target is None:  # auto or fixed: tell the miner now (holding a temperature starts on the next poll)
+                ok, msg = send(ip, "fan-spd", -1 if fixed is None else fixed)
+                if not ok:
+                    return 502, {"error": "the miner refused the fan speed: %s" % msg}
+            with lock:
+                fans = {k: v for k, v in (CFG.get("avalon_fan") or {}).items() if k != ip}
+                targets = {k: v for k, v in (CFG.get("avalon_target") or {}).items() if k != ip}
+                if fixed is not None:
+                    fans[ip] = fixed
+                if target is not None:
+                    targets[ip] = target
+            save_config({"avalon_fan": fans, "avalon_target": targets})
+            with lock:
+                CFG["avalon_fan"], CFG["avalon_target"] = fans, targets
+                avalon_ctl.pop(ip, None)
+                if fixed is not None:
+                    avalon_ctl[ip] = {"pct": fixed, "at": time.time()}
+            done["fan"] = ("hold %d °C" % target) if target is not None else fixed if fixed is not None else "auto"
+        if "mode" in data:
+            try:
+                mode = int(data["mode"])
+            except (TypeError, ValueError):
+                mode = -1
+            if mode not in (0, 1, 2):
+                return 400, {"error": "the work mode must be 0 (Low), 1 (Medium) or 2 (High)"}
+            ok, msg = send(ip, "workmode", "set,%d" % mode)
+            if not ok:
+                return 502, {"error": "the miner refused the work mode: %s" % msg}
+            done["mode"] = AVALON_MODES[str(mode)]
+    except OSError as e:
+        return 502, {"error": "no answer from the miner at %s: %s" % (ip, e)}
+    if not done:
+        return 400, {"error": "nothing to change"}
+    print("Avalon %s set from the dashboard: %s" % (ip, done), flush=True)
+    return 200, {"ok": True, **done}
 
 
 thor_cache = {}  # ip -> device info, uptime and recent hashrate samples (info and uptime are read once a minute)
@@ -2410,6 +2552,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/voltfloor":
             code, reply = set_volt_floor(data)
+            return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/dash/avalon":
+            code, reply = set_avalon(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/miner":
             code, reply = manage_miner(data)

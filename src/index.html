@@ -395,6 +395,17 @@ body.privacy .sensitive { filter: blur(6px); }
     <div class="ai-foot" style="margin:8px 0 0">For Bitaxe-type miners (AxeOS). Limits used: power stage (VR) 80 °C on a Gamma and 90 °C on a Hex, chip 67 °C. Change one thing at a time on the miner's own page and give it 30 minutes before judging: the pool's count needs time to settle. When a lower voltage makes a miner's errors jump, the report remembers the last good voltage as its floor and won't suggest going below it; you can also set or forget a floor with the button. Braiins OS miners tune themselves.</div>
   </section>
 
+  <section class="card" style="margin-bottom:12px;display:none" id="avalonCard">
+    <h2>Avalon controls <span class="muted">fan and work mode for Canaan Avalon miners; a change applies right away</span></h2>
+    <div class="tablewrap">
+      <table>
+        <thead><tr><th class="first">Miner</th><th class="r">Fan now</th><th class="r" title="Average of its chips / hottest chip">Chips avg / max</th><th class="r">Hashrate</th></tr></thead>
+        <tbody id="avalonRows"></tbody>
+      </table>
+    </div>
+    <div class="ai-foot" style="margin:8px 0 0"><span>Miner auto: the miner runs its fan as slowly as it can until its chips average about 90 °C (quiet, but hot). Hold °C: the dashboard adjusts the fan once a minute to keep the chip average near that temperature (a few minutes to settle; at its 15% minimum fan a cool room can keep it below the target, and at 85 °C the fan goes to 100%). Fixed %: one fan speed. Cooler chips usually give a little more hashrate, for more fan noise. The dashboard must be running to hold a temperature; if the miner restarts, the dashboard sets the fan again. Changing the work mode makes the miner re-tune for a few minutes.</span></div>
+  </section>
+
   <section class="grid2">
     <div class="card" id="blockCard">
       <h2>Latest block <span class="muted">how fast your miners switched</span></h2>
@@ -766,6 +777,7 @@ function render(s) {
   renderBlock(s);
   renderMiners(s);
   renderTuning(s);
+  renderAvalon(s);
   renderTuneHistory(s);
   renderBlocks(s);
   renderSolo(s);
@@ -1054,6 +1066,67 @@ $("tuneRows").addEventListener("click", e => {
     body: JSON.stringify(Object.assign({name: b.dataset.floor, action: b.dataset.act}, b.dataset.freq ? {freq: +b.dataset.freq} : {}))})
     .then(r => r.json()).then(r => { if (r.error) { alert(r.error); b.disabled = false; } })
     .catch(() => { b.disabled = false; });
+});
+
+// ---- Avalon controls: rows are rebuilt only when the miners or their saved settings change, so a choice
+// being made isn't wiped by the 5-second updates; the live numbers are filled in place
+const AV_FANS = [["auto", "Miner auto (~90 °C)"], ...[65, 70, 72, 75, 80].map(c => ["t" + c, `Hold ${c} °C`]),
+  ...[20, 25, 30, 35, 40, 50, 60, 70, 80, 100].map(p => [String(p), `Fixed ${p}%`])];
+let avalonSig = "";
+const avId = ip => "av-" + ip.replace(/\./g, "-");
+const avFanNow = m => m.fan_target ? "t" + m.fan_target : m.fan_setting ? String(m.fan_setting) : "auto";
+function renderAvalon(s) {
+  const av = (s.miners || []).filter(m => m.kind === "avalon" && m.status !== "offline")
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  $("avalonCard").style.display = av.length ? "" : "none";
+  const sig = JSON.stringify(av.map(m => [m.ip, m.name, m.fan_setting, m.fan_target, m.mode_num]));
+  if (sig !== avalonSig) {
+    avalonSig = sig;
+    $("avalonRows").innerHTML = av.map(m => {
+      const id = avId(m.ip), cur = avFanNow(m);
+      const list = AV_FANS.some(([v]) => v === cur) ? AV_FANS
+        : AV_FANS.concat([[cur, cur[0] === "t" ? `Hold ${cur.slice(1)} °C` : `Fixed ${cur}%`]]);
+      const fanOpts = list.map(([v, txt]) => `<option value="${v}"${v === cur ? " selected" : ""}>${txt}</option>`).join("");
+      const modeOpts = [[0, "Low"], [1, "Medium"], [2, "High"]].map(([v, txt]) => `<option value="${v}"${v === m.mode_num ? " selected" : ""}>${txt}</option>`).join("");
+      return `<tr><td class="first"><div class="mname">${esc(m.name)}</div><div class="msub">${esc(m.model || "")}</div></td>
+        <td class="r num" id="${id}-fan"></td><td class="r num" id="${id}-temp"></td><td class="r num" id="${id}-ths"></td></tr>
+        <tr><td class="first" colspan="4" style="border-top:0;padding-top:0"><div class="setting-ctl" style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center">
+          <span style="white-space:nowrap">Fan <select data-av-fan="${esc(m.ip)}">${fanOpts}</select> <button class="btn small" type="button" data-av-set="fan" data-ip="${esc(m.ip)}">Apply</button></span>
+          <span style="white-space:nowrap">Work mode <select data-av-mode="${esc(m.ip)}">${modeOpts}</select> <button class="btn small" type="button" data-av-set="mode" data-ip="${esc(m.ip)}">Apply</button></span>
+          <span class="msub" id="${id}-msg"></span></div></td></tr>`;
+    }).join("");
+  }
+  for (const m of av) {
+    const id = avId(m.ip), el = x => document.getElementById(id + x);
+    if (!el("-fan")) continue;
+    const how = m.fan_target ? `holding ${m.fan_target} °C` : m.fan_setting ? `fixed ${m.fan_setting}%` : "miner auto";
+    el("-fan").innerHTML = (m.fan != null ? Math.round(m.fan) + "%" : "—") + `<div class="msub">${m.fan_rpm != null ? Math.round(m.fan_rpm) + " rpm · " : ""}${how}</div>`;
+    el("-temp").textContent = (m.temp != null ? Math.round(m.temp) + "°" : "—") + " / " + (m.temp_max != null ? Math.round(m.temp_max) + "°" : "—");
+    el("-ths").textContent = fmtTH(m.ths);
+  }
+}
+$("avalonRows").addEventListener("click", e => {
+  const b = e.target.closest("button[data-av-set]");
+  if (!b) return;
+  const ip = b.dataset.ip, what = b.dataset.avSet, msg = document.getElementById(avId(ip) + "-msg");
+  const sel = $("avalonRows").querySelector(what === "fan" ? `select[data-av-fan="${CSS.escape(ip)}"]` : `select[data-av-mode="${CSS.escape(ip)}"]`);
+  const body = {ip};
+  if (what === "fan") {
+    const v = sel.value;
+    if (v[0] === "t") body.target = +v.slice(1); else body.fan = v === "auto" ? "auto" : +v;
+  } else {
+    if (!confirm(`Set the work mode to ${sel.options[sel.selectedIndex].text}? The miner re-tunes for a few minutes, and its power changes.`)) return;
+    body.mode = +sel.value;
+  }
+  b.disabled = true;
+  if (msg) msg.textContent = "sending…";
+  fetch("api/dash/avalon", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+    .then(r => r.json()).then(r => {
+      b.disabled = false;
+      if (r.error) { if (msg) msg.textContent = ""; alert(r.error); return; }
+      if (msg) msg.textContent = what === "fan" ? (r.fan === "auto" ? "Fan: miner auto" : typeof r.fan === "number" ? `Fan fixed at ${r.fan}%` : `Fan: ${r.fan} (adjusts once a minute)`) : `Work mode set to ${r.mode}`;
+    })
+    .catch(() => { b.disabled = false; if (msg) msg.textContent = "no answer from the dashboard"; });
 });
 
 // ---- tuning history: each Bitaxe change with its readings before, 40 minutes after, and now
