@@ -498,6 +498,13 @@ body.privacy .sensitive { filter: blur(6px); }
     <div id="extraMiners" style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px"></div>
     <div class="ai-foot" style="margin:0 0 14px">For a miner on another pool. Miners on Solo45 show up by themselves. The dashboard reads Bitaxe (AxeOS), Braiins OS, Thor OS, MARA and stock Bitmain firmware, and asks the miner first, so only an address that answers like a miner is saved.</div>
     <h2>Share difficulty per miner <span class="muted">only changes how often a miner sends shares, not your chance of a block</span></h2>
+    <div class="setting-ctl" id="soloAll" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px">
+      <span>All miners</span>
+      <select><option value="auto">Automatic</option><option value="share_seconds" selected>Seconds per share</option><option value="diff">Fixed difficulty</option></select>
+      <input type="number" min="0" step="any" placeholder="e.g. 10" style="width:90px">
+      <button class="btn small" type="button">Apply to all</button>
+      <span class="muted" id="soloAllNote" role="status"></span>
+    </div>
     <div class="tablewrap">
       <table>
         <thead><tr><th class="first">Miner</th><th>Setting</th><th class="r">Difficulty now</th><th class="r">Time per share</th><th class="r">Shares</th><th>Change</th></tr></thead>
@@ -1012,7 +1019,7 @@ function renderMiners(s) {
 
 // ---- Solo45 share difficulty (the table is rebuilt only when miners or settings change,
 // so the inputs aren't wiped while you type; the numbers update in place)
-let soloSig = "";
+let soloSig = "", soloNames = [];  // soloNames: the miners on Solo45, for "Apply to all"
 let payForceBusy = false;
 let emptyFirstBusy = false;  // while the payout switch saves, live updates don't flip it back
 const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
@@ -1186,6 +1193,7 @@ function renderSolo(s) {
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
   }
   const ws = (so.workers || []).slice().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  soloNames = ws.map(w => w.name);
   const sig = ws.map(w => w.name + JSON.stringify(w.override || {})).join("|");
   const editing = document.activeElement && $("soloWorkers").contains(document.activeElement);
   if (sig !== soloSig && !editing) {
@@ -1210,6 +1218,29 @@ function renderSolo(s) {
     el("ss").innerHTML = Number(w.accepted).toLocaleString() + (rej ? `<span class="faint"> / ${rej} rejected</span>` : "");
   });
 }
+
+$("soloAll").querySelector("select").addEventListener("change", e => {
+  const input = $("soloAll").querySelector("input");
+  input.style.display = e.target.value === "auto" ? "none" : "";
+  input.placeholder = e.target.value === "diff" ? "e.g. 2000" : "e.g. 10";
+});
+$("soloAll").querySelector("button").addEventListener("click", async e => {
+  const mode = $("soloAll").querySelector("select").value, val = parseFloat($("soloAll").querySelector("input").value);
+  const note = $("soloAllNote"), names = soloNames.slice();
+  if (mode !== "auto" && !(val > 0)) { note.textContent = "Enter a number first."; return; }
+  if (!names.length) { note.textContent = "No miners on Solo45 right now."; return; }
+  const body = mode === "auto" ? {} : {[mode]: val};
+  if (!confirm(`Set all ${names.length} miners on Solo45 to “${settingText(body)}”?`)) return;
+  e.target.disabled = true;
+  const failed = [];
+  for (const [i, name] of names.entries()) {
+    note.textContent = `Saving ${i + 1} of ${names.length}…`;
+    if (!await saveSetting(name, body, $("soloNote"))) failed.push(name);
+  }
+  e.target.disabled = false;
+  note.textContent = failed.length ? `Saved ${names.length - failed.length} of ${names.length}; not saved: ${failed.join(", ")}`
+    : `All ${names.length} miners are now on “${settingText(body)}”.`;
+});
 
 async function saveSetting(name, body, note) {
   note.textContent = "Saving…";
