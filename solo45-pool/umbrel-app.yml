@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.59"
+version: "0.1.60"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  Each miner now shows the share of its results its pool rejected over the last hour (from the miner's own counts, so it works on any pool), and turns to a warning above 2%. Your settings and history are kept.
+  The Avalon controls card now shows each chip's temperature as a grid (orange from 78 °C, red from 85 °C), read from the miner's stock firmware. Your settings and history are kept.
 
 developer: race45race
 website: https://github.com/race45race/solo45
