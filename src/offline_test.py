@@ -406,7 +406,8 @@ _nano = {
                          "Stratum Active": True, "Last Share Time": 1794433885, "Getworks": 5}]},
     "estats": {"STATS": [{"STATS": 0, "ID": "AVALON0", "MM ID0": "Ver[Nano3s-25061101] ITemp[-273] OTemp[71] TMax[90] TAvg[86] "
                           "TarT[90] Fan1[1220] FanR[28%] PS[0 0 27470 4 0 3652 130] WORKMODE[2] MPO[133] "
-                          "PVT_T0[ 83  84  87  86  88  86  84  84  90  88  87  83]"}]},
+                          "PVT_T0[ 83  84  87  86  88  86  84  84  90  88  87  83] "
+                          "PVT_V0[309 307 308 304 303 303 308 308 304 302 304 307]"}]},
 }
 server.cgminer = lambda ip, cmd, timeout=3: (_nano if ip == "10.9.9.16" else _bos)[cmd]
 server.http_json = _fake_http
@@ -426,6 +427,13 @@ check("Canaan Avalon (Nano 3S) is read as Avalon, with chip temp, watts, fan and
       and _a["temp"] == 86 and _a["temp_max"] == 90 and _a["temp2"] == 71 and _a["power"] == 133 and _a["fan"] == 28 and _a["mode"] == "High"
       and _a["pool"] == "Solo45" and _not_avalon and _a_ok[1] == "Hashing" and _a_hot[1] == "Running hot" and _a_hotchip[1] == "Running hot",
       str({k: _a.get(k) for k in ("kind", "name", "model", "ths", "temp", "temp2", "power", "fan", "mode", "pool")}) + str(_a_ok) + str(_a_hot))
+_html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), encoding="utf-8").read()
+check("Avalon: each chip's temperature and voltage in order, shown as a grid on the Avalon card",
+      isinstance(_a.get("chips"), list) and len(_a["chips"]) == 12 and _a["chips"][8] == {"t": 90, "mv": 304}
+      and _a["chips"][0] == {"t": 83, "mv": 309}
+      and server.avalon_per_chip({"PVT_T1": "50 x", "PVT_T0": "40 999"}, "PVT_T", -40, 150) == [40, None, 50, None]
+      and 'id="${id}-chips"' in _html and "AV_CHIP_HOT" in _html,
+      str(_a.get("chips")))
 _sent = []
 _send = lambda ip, key, value: (_sent.append((ip, key, value)) or (True, "ASC 0 set OK"))
 _v_fan = server.set_avalon({"ip": "10.9.9.16", "fan": 30}, send=_send)

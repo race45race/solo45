@@ -866,6 +866,20 @@ def avalon_num(fields, key, index=0):
 AVALON_MODES = {"0": "Low", "1": "Medium", "2": "High"}
 
 
+def avalon_per_chip(fields, prefix, lo, hi):
+    """One reading per chip from 'PVT_T0[ 69  70 ...]' (board 0, then 1, ...), None where it isn't a sane number."""
+    keys = sorted((k for k in fields if k.startswith(prefix) and k[len(prefix):].isdigit()), key=lambda k: int(k[len(prefix):]))
+    out = []
+    for k in keys:
+        for x in fields[k].split():
+            try:
+                v = float(x)
+            except ValueError:
+                v = None
+            out.append(v if v is not None and lo < v < hi else None)
+    return out
+
+
 def poll_avalon(ip):
     """Canaan Avalon (e.g. the Avalon Nano 3S): CGMiner API on port 4028 like Braiins OS, but the
     temperatures, fan and watts are only in the "estats" string. Read-only, like the others."""
@@ -883,6 +897,8 @@ def poll_avalon(ip):
     f = avalon_fields(mm)
     chip_temps = [float(x) for k, v in f.items() if k.startswith("PVT_T") for x in v.split() if x.lstrip("-").isdigit()]
     chip_temps = [t for t in chip_temps if -40 < t < 150]
+    chip_t = avalon_per_chip(f, "PVT_T", -40, 150)   # each chip in order, None where unreadable
+    chip_mv = avalon_per_chip(f, "PVT_V", 0, 2000)
     outlet = avalon_num(f, "OTemp")
     power = avalon_num(f, "MPO") or (avalon_num(f, "PS", -1) if f.get("PS") else None)
     active = active_pool(pools)
@@ -929,6 +945,7 @@ def poll_avalon(ip):
         "mode_num": int(f["WORKMODE"]) if f.get("WORKMODE", "").isdigit() else None,
         "fan_setting": (CFG.get("avalon_fan") or {}).get(ip),      # fixed %, or None
         "fan_target": (CFG.get("avalon_target") or {}).get(ip),    # held chip °C, or None (None + None = auto)
+        "chips": [{"t": t, "mv": chip_mv[i] if i < len(chip_mv) else None} for i, t in enumerate(chip_t)] or None,
     }
 
 

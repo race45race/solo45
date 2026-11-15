@@ -174,6 +174,15 @@ button.btn.small { font-size: 12px; padding: 3px 9px; }
   border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 .setting-ctl input { width: 90px; }
 .setting-ctl input[type=checkbox] { width: auto; margin: 0 4px 0 0; vertical-align: -2px; }
+.chipgrid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; max-width: min(560px, calc(100vw - 72px)); }
+.chiphd { margin: 0 0 6px; max-width: min(560px, calc(100vw - 72px)); }
+.chipgrid .chip { border: 1px solid var(--line); border-radius: 8px; padding: 5px 4px; text-align: center; background: var(--panel-2); }
+.chipgrid .chip span { display: block; font-size: 10.5px; color: var(--muted); }
+.chipgrid .chip b { font-family: var(--mono); font-size: 15px; font-variant-numeric: tabular-nums; }
+.chipgrid .chip.warm { background: var(--warn-bg); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.chipgrid .chip.hot { background: var(--bad-bg); border-color: var(--bad); }
+.chipgrid .chip.hot b { color: var(--bad); }
+@media (max-width: 520px) { .chipgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 .feed { font-family: var(--mono); font-size: 12.5px; max-height: 360px; overflow-y: auto; display: grid; gap: 1px; }
 .feed .row { display: grid; grid-template-columns: 70px 84px 1fr 16px; gap: 10px; padding: 3px 6px; border-radius: 5px; align-items: center; }
 .feed .row .val { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -396,7 +405,7 @@ body.privacy .sensitive { filter: blur(6px); }
   </section>
 
   <section class="card" style="margin-bottom:12px;display:none" id="avalonCard">
-    <h2>Avalon controls <span class="muted">fan and work mode for Canaan Avalon miners; a change applies right away</span></h2>
+    <h2>Avalon controls <span class="muted">fan and work mode for Canaan Avalon miners (a change applies right away), and each chip's temperature</span></h2>
     <div class="tablewrap">
       <table>
         <thead><tr><th class="first">Miner</th><th class="r">Fan now</th><th class="r" title="Average of its chips / hottest chip">Chips avg / max</th><th class="r">Hashrate</th></tr></thead>
@@ -1081,6 +1090,7 @@ $("tuneRows").addEventListener("click", e => {
 const AV_FANS = [["auto", "Miner auto (~90 °C)"], ...[65, 70, 72, 75, 80].map(c => ["t" + c, `Hold ${c} °C`]),
   ...[20, 25, 30, 35, 40, 50, 60, 70, 80, 100].map(p => [String(p), `Fixed ${p}%`])];
 let avalonSig = "", avalonMsgs = {};  // ip -> the last message under its buttons
+const AV_CHIP_WARM = 78, AV_CHIP_HOT = 85;   // chip colours; 85 °C is also where a held fan goes to 100%
 const avId = ip => "av-" + ip.replace(/\./g, "-");
 const avFanNow = m => m.fan_target ? "t" + m.fan_target : m.fan_setting ? String(m.fan_setting) : "auto";
 function renderAvalon(s) {
@@ -1101,7 +1111,9 @@ function renderAvalon(s) {
         <tr><td class="first" colspan="4" style="border-top:0;padding-top:0"><div class="setting-ctl" style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center">
           <span style="white-space:nowrap">Fan <select data-av-fan="${esc(m.ip)}">${fanOpts}</select> <button class="btn small" type="button" data-av-set="fan" data-ip="${esc(m.ip)}">Apply</button></span>
           <span style="white-space:nowrap">Work mode <select data-av-mode="${esc(m.ip)}">${modeOpts}</select> <button class="btn small" type="button" data-av-set="mode" data-ip="${esc(m.ip)}">Apply</button></span>
-          <span class="msub" id="${id}-msg">${esc(avalonMsgs[m.ip] || "")}</span></div></td></tr>`;
+          <span class="msub" id="${id}-msg">${esc(avalonMsgs[m.ip] || "")}</span></div></td></tr>
+        <tr id="${id}-chipsrow" style="display:none"><td class="first" colspan="4" style="border-top:0;padding-top:2px">
+          <div class="msub chiphd" id="${id}-chiphd"></div><div class="chipgrid" id="${id}-chips"></div></td></tr>`;
     }).join("");
   }
   for (const m of av) {
@@ -1111,6 +1123,16 @@ function renderAvalon(s) {
     el("-fan").innerHTML = (m.fan != null ? Math.round(m.fan) + "%" : "—") + `<div class="msub">${m.fan_rpm != null ? Math.round(m.fan_rpm) + " rpm · " : ""}${how}</div>`;
     el("-temp").textContent = (m.temp != null ? Math.round(m.temp) + "°" : "—") + " / " + (m.temp_max != null ? Math.round(m.temp_max) + "°" : "—");
     el("-ths").textContent = fmtTH(m.ths);
+    const chips = m.chips || [], ts = chips.map(c => c.t).filter(t => t != null);
+    el("-chipsrow").style.display = ts.length ? "" : "none";
+    if (!ts.length) continue;
+    const lo = Math.round(Math.min(...ts)), hi = Math.round(Math.max(...ts));
+    el("-chiphd").textContent = `Each chip's temperature, from the miner: ${lo}–${hi} °C (spread ${hi - lo}°). Orange from ${AV_CHIP_WARM} °C, red from ${AV_CHIP_HOT} °C.`;
+    el("-chips").innerHTML = chips.map((c, i) => {
+      const cls = c.t == null ? "" : c.t >= AV_CHIP_HOT ? " hot" : c.t >= AV_CHIP_WARM ? " warm" : "";
+      const tip = `Chip ${i}` + (c.t != null ? `: ${Math.round(c.t)} °C` : "") + (c.mv != null ? `, ${Math.round(c.mv)} mV` : "");
+      return `<div class="chip${cls}" title="${tip}"><span>Chip ${i}</span><b>${c.t != null ? Math.round(c.t) + "°" : "—"}</b></div>`;
+    }).join("");
   }
 }
 $("avalonRows").addEventListener("click", e => {
