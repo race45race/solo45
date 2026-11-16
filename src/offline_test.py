@@ -773,9 +773,35 @@ async def release_0137_tests():
     await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
     once = len(calls) == 1 and "bad-prevblk" in str(pool.state["blocks"][-1]["result"])
     with open(os.path.join(pool.data_dir, "blocks_found.jsonl")) as f:
-        saved = len(f.read().splitlines()) == 3
+        lines = [json.loads(x) for x in f.read().splitlines()]
+    # each block twice: saved before sending ("sending", with the block), then with the node's verdict
+    saved = (len(lines) == 6 and [x["result"] for x in lines[::2]] == ["sending"] * 3
+             and all(x.get("hex") == "01" * 81 for x in lines))
     check("a found block is sent again when the node can't be reached or is still starting, not after its verdict",
           retried and warmup and once and saved, "(retried %s, warmup %s, verdict once %s, saved %s)" % (retried, warmup, once, saved))
+    calls.clear()
+
+    def late(method, *params, timeout=15):  # the first try timed out on our side but reached the node
+        calls.append(method)
+        if len(calls) < 2:
+            raise TimeoutError("timed out")
+        return "duplicate"
+    pool.rpc.call = late
+    await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
+    dup_ok = len(calls) == 2 and pool.state["blocks"][-1]["result"] is None
+    pool.rpc.call = lambda method, *params, timeout=15: "duplicate"  # first try: the node's answer stands
+    await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
+    dup_first = pool.state["blocks"][-1]["result"] == "duplicate"
+    pool.data_dir = pool.state_path = os.path.join(pool.data_dir, "missing", "dir")  # writes fail
+    pool.rpc.call = lambda method, *params, timeout=15: None
+    n_before = len(pool.state["blocks"])
+    try:
+        await pool.found_block(miner, job, b"\x00" * 80, b"", 1e15)
+        disk_ok = len(pool.state["blocks"]) == n_before + 1 and pool.state["blocks"][-1]["result"] is None
+    except OSError:
+        disk_ok = False
+    check("a resent block the node already has counts as accepted; a failed disk write doesn't stop a block",
+          dup_ok and dup_first and disk_ok, "(resent duplicate %s, first-try duplicate kept %s, disk %s)" % (dup_ok, dup_first, disk_ok))
     await asyncio.sleep(0.05)
 
 

@@ -939,7 +939,12 @@ class Pool:
         block_hex = job.block(header, coinbase).hex()
         block_hash = sha256d(header)[::-1].hex()
         log.critical("BLOCK FOUND by %s (%s) at height %d: %s", worker.name, worker.ip, job.height, block_hash)
+        record = {"height": job.height, "hash": block_hash, "worker": worker.name, "ip": worker.ip,
+                  "address": worker.address, "diff": share_diff, "value": job.value, "at": time.time()}
+        # on disk before it goes to the node: if the pool is stopped or crashes while sending, the block is kept
+        self.save_found_block(dict(record, result="sending", hex=block_hex))
         loop = asyncio.get_running_loop()
+        resent = False  # an earlier try failed on our side, so the node may have the block already
         self.submitting += 1  # a stop signal waits for this (see stop())
         try:
             for attempt in range(1, SUBMIT_TRIES + 1):
@@ -950,6 +955,7 @@ class Pool:
                     result = "error: %s" % e
                     if isinstance(e, RPCError) and not node_warming_up(e):
                         break  # the node's own answer: sending the same block again won't change it
+                    resent = True
                     # the node couldn't be reached, didn't answer, or is still starting: send it again
                     log.critical("submitblock %s, try %d of %d failed: %s%s", block_hash, attempt, SUBMIT_TRIES, e,
                                  "; trying again" if attempt < SUBMIT_TRIES else "")
@@ -957,15 +963,28 @@ class Pool:
                         await asyncio.sleep(SUBMIT_RETRY_S)
         finally:
             self.submitting -= 1
+        if result == "duplicate" and resent:
+            # a try that timed out on our side reached the node after all: "duplicate" means the node already
+            # has this block and found it valid ("duplicate-invalid" and "duplicate-inconclusive" say otherwise)
+            log.critical("submitblock %s: the node already had it from an earlier try", block_hash)
+            result = None
         log.critical("submitblock %s: %s", block_hash, "accepted by the node" if result is None else "the node said %r" % (result,))
-        record = {"height": job.height, "hash": block_hash, "worker": worker.name, "ip": worker.ip,
-                  "address": worker.address, "diff": share_diff, "value": job.value,
-                  "at": time.time(), "result": result}
-        with open(os.path.join(self.data_dir, "blocks_found.jsonl"), "a") as f:
-            f.write(json.dumps(dict(record, hex=block_hex)) + "\n")
+        record["result"] = result
+        self.save_found_block(dict(record, hex=block_hex))
         self.state["blocks"].append(record)
-        self.save_state()
+        try:
+            self.save_state()
+        except OSError as e:
+            log.critical("couldn't save the state after block %s: %s", block_hash, e)
         loop.create_task(self.update_template(clean=True))
+
+    def save_found_block(self, entry):
+        """One line in blocks_found.jsonl (the full block in hex). A full disk must not stop the block."""
+        try:
+            with open(os.path.join(self.data_dir, "blocks_found.jsonl"), "a") as f:
+                f.write(json.dumps(entry) + "\n")
+        except OSError as e:
+            log.critical("couldn't save block %s to blocks_found.jsonl: %s", entry.get("hash"), e)
 
     def log_share(self, name, diff, share_diff, rejected=None, block=False):
         """Remember a share for the live feed: in memory only, nothing slow in the share path."""
