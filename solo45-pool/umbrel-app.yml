@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.60"
+version: "0.1.61"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  The Avalon controls card now shows each chip's temperature as a grid (orange from 78 °C, red from 85 °C), read from the miner's stock firmware. Your settings and history are kept.
+  The best-share card's All time now keeps each miner's highest best share, so a Braiins or Avalon miner restarting (which resets its own record) no longer makes it drop below Today. Your settings and history are kept.
 
 developer: race45race
 website: https://github.com/race45race/solo45
