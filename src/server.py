@@ -46,6 +46,7 @@ KNOWN_PATH = os.path.join(DATA, "known_miners.json")
 TEMPS_PATH = os.path.join(DATA, "temps.json")
 VOLT_PATH = os.path.join(DATA, "volt_floors.json")  # each Bitaxe's known lowest safe core voltage
 TUNING_PATH = os.path.join(DATA, "tuning_history.json")  # each Bitaxe's speed/voltage changes, before and after
+EVER_PATH = os.path.join(DATA, "best_ever.json")  # each miner's highest best share seen (survives miner restarts)
 ROUND_PATH = os.path.join(DATA, "best_round.json")  # each miner's best share since the owner last pressed Refresh
 NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
 
@@ -118,6 +119,7 @@ S = {
     "daily": {},         # {"date", "miners": {name: {"best", "at", "hashes"}}}: best share today
     "round": {},         # {"since", "miners": {name: {"best", "at"}}}: best share since the last Refresh
     "best_history": [],  # one entry per finished day: {"date", "best", "name", "typical", "miners"}
+    "ever": {},          # name -> the highest best share seen for that miner, ever
     "work": {},          # {"month", "hashes", "since", "prev"}: fleet hashes this month
     "temps": {},         # name -> [[t, chip, vr, online], ...] every 5 minutes for 24 h
     "node": {},          # node, network, difficulty-adjustment and halving stats
@@ -1738,6 +1740,19 @@ def merged_daily():
     return out
 
 
+def track_ever():
+    """Keep each miner's all-time best (lock held): the highest of what the miner reports and every best of
+    the day seen here. Braiins and Avalon miners reset their own "Best Share" when they restart, so their
+    reported number alone can drop below today's. Returns True when a record rose."""
+    ever, rose = S["ever"], False
+    vals = [(n, d.get("best")) for n, d in merged_daily().items()]
+    vals += [(m.get("name"), m.get("best")) for m in S["miners"].values() if m.get("name")]
+    for name, v in vals:
+        if isinstance(v, (int, float)) and v > (ever.get(name) or 0):
+            ever[name], rose = v, True
+    return rose
+
+
 def best_today():
     """Each miner's best share today vs the typical best for the hashes it did (hashes / 2^32)."""
     rows, fleet_best, fleet_hashes, fleet_at, fleet_name = [], 0, 0.0, None, None
@@ -1877,6 +1892,7 @@ def snapshot():
             "solo45": S["solo45"],
             "best_today": best_today(),
             "best_round": best_round(),
+            "miner_best_ever": dict(S["ever"]),
             "best_history": S["best_history"][-30:],
             "tuning": tuning_history[-60:],
             "work": work_summary(nd),
@@ -1930,7 +1946,8 @@ def save_known_miners():
 def save_all():
     """What the loops save every 30 s to 5 min, saved at once (on the way out, so an update loses nothing)."""
     with lock:
-        for path, key in ((HISTORY_PATH, "history"), (TEMPS_PATH, "temps"), (DAILY_PATH, "daily"), (WORK_PATH, "work")):
+        for path, key in ((HISTORY_PATH, "history"), (TEMPS_PATH, "temps"), (DAILY_PATH, "daily"), (WORK_PATH, "work"),
+                          (EVER_PATH, "ever")):
             try:
                 save_json(path, S[key])
             except OSError as e:
@@ -2109,11 +2126,14 @@ def history_loop():
             daily = json.loads(json.dumps(S["daily"]))
             rnd = json.loads(json.dumps(S["round"]))
             work = dict(S["work"])
+            ever = dict(S["ever"]) if track_ever() else None
         try:
             save_json(DAILY_PATH, daily)
             save_json(WORK_PATH, work)
             if rnd.get("since"):
                 save_json(ROUND_PATH, rnd)
+            if ever:
+                save_json(EVER_PATH, ever)
         except OSError:
             pass
         if time.time() - last_save > 300:
@@ -2673,6 +2693,13 @@ def main():
     if not isinstance(S["round"], dict) or not isinstance(S["round"].get("miners"), dict):
         S["round"] = {}  # the first round starts with the first shares seen
     S["best_history"] = load_json(BEST_HISTORY_PATH, [])
+    S["ever"] = load_json(EVER_PATH, {})
+    if not isinstance(S["ever"], dict):
+        S["ever"] = {}
+    for h in S["best_history"]:  # the first start after the update: each miner's best day of the last 60
+        for name, v in ((h.get("miners") if isinstance(h, dict) else None) or {}).items():
+            if isinstance(v, (int, float)) and v > (S["ever"].get(name) or 0):
+                S["ever"][name] = v
     S["work"] = load_json(WORK_PATH, {})
     S["temps"] = load_json(TEMPS_PATH, {})
     for ip, last_ok in load_json(KNOWN_PATH, {}).items():

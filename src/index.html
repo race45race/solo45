@@ -361,7 +361,7 @@ body.privacy .sensitive { filter: blur(6px); }
     </div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th class="first">Miner</th><th class="r">This round</th><th class="r">When</th><th class="r">Today</th><th class="r" title="The miner's own best since it was set up (as it reports it)">All time</th></tr></thead>
+        <thead><tr><th class="first">Miner</th><th class="r">This round</th><th class="r">When</th><th class="r">Today</th><th class="r" title="The highest best share seen for this miner: its own record, or the best of any day seen here (a Braiins or Avalon miner resets its own record when it restarts)">All time</th></tr></thead>
         <tbody id="roundRows"></tbody>
       </table>
     </div>
@@ -1638,7 +1638,9 @@ function renderBestToday(s) {
 function renderRound(s) {
   const r = s.best_round || {}, today = {}, ever = {};
   for (const m of (s.best_today || {}).miners || []) today[m.name] = m.best;
-  for (const m of s.miners || []) ever[m.name] = m.best;
+  for (const [n, v] of Object.entries(s.miner_best_ever || {})) ever[n] = v;
+  for (const m of s.miners || []) ever[m.name] = Math.max(ever[m.name] || 0, m.best || 0);
+  for (const [n, v] of Object.entries(today)) ever[n] = Math.max(ever[n] || 0, v || 0);
   const rows = (r.miners || []).slice();
   // miners hashing on Solo45 with no share in this round yet still get a row
   for (const m of s.miners || []) if (m.pool === "Solo45" && m.status !== "offline" && !rows.some(x => x.name === m.name)) rows.push({name: m.name, best: 0, at: null});

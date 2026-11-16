@@ -929,6 +929,22 @@ check("chip domains: a domain stuck at 0 for 10 minutes is flagged, not during w
       _doms_ok and _seq[100] == 0 and _seq[-1] == 2 and _r2["dead_domains"] == 0 and _r3["dead_domains"] == 0
       and _st == ("warn", "2 of 4 chip domains stopped"), str((_doms_ok, _seq[100], _seq[-1], _r2.get("dead_domains"), _st)))
 
+# all-time best: a Braiins restart resets the miner's own record, the kept one stays
+with server.lock:
+    _old = (server.S["ever"], server.S["daily"], server.S["miners"])
+    server.S["daily"] = {"date": "2026-01-01", "since": 0, "miners": {"T21": {"best": 2e9, "at": 1, "hashes": 0.0}}}
+    server.S["miners"] = {"1": {"name": "T21", "best": 5e8}, "2": {"name": "Bx", "best": 1.7e9}}
+    server.S["ever"] = {"Bx": 1e9, "Old": 3.0}
+    _rose = server.track_ever()
+    _ever = dict(server.S["ever"])
+    server.S["miners"]["1"]["best"] = 1e3
+    _rose2 = server.track_ever()
+    server.S["ever"], server.S["daily"], server.S["miners"] = _old
+_ihtml = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), encoding="utf-8").read()
+check("all-time best: kept above a restarted miner's own record, and shown on the card",
+      _rose and not _rose2 and _ever == {"T21": 2e9, "Bx": 1.7e9, "Old": 3.0} and "miner_best_ever" in _ihtml,
+      str((_rose, _rose2, _ever)))
+
 # best-share round: Refresh starts it over for every miner, and it is saved for the next start
 _code, _r = server.reset_round()
 _saved = json.load(open(server.ROUND_PATH))
