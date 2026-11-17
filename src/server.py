@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
@@ -1189,7 +1189,7 @@ def archive_day():
     if not S["daily"].get("miners"):
         return
     bt = best_today()
-    entry = {"date": bt["date"], "best": bt["fleet"]["best"], "name": bt["fleet"]["name"],
+    entry = {"date": bt["date"], "best": bt["fleet"]["best"], "name": bt["fleet"]["name"], "at": bt["fleet"]["at"],
              "typical": bt["fleet"]["typical"], "tag": bt["fleet"]["tag"],
              "miners": {m["name"]: m["best"] for m in bt["miners"] if m["best"]}}
     S["best_history"] = [h for h in S["best_history"] if h["date"] != entry["date"]] + [entry]
@@ -1839,6 +1839,29 @@ def journey(best, at, name, ths, now):
             "chance": 1 - math.exp(-done / need), "expected_s": need / (ths * 1e12) if ths else None}
 
 
+def month_journey(bt, solo_ths, now):
+    """The journey to beat this month's best share on Solo45: the best of this month's finished days, or today's
+    (lock held). For a past day, the work since is the rest of that day (none when its time wasn't saved, so the
+    numbers are a minimum), each later day's Solo45 hashes (its typical x 2^32), and today's so far."""
+    today = S["daily"].get("date") or local_now().strftime("%Y-%m-%d")
+    days = [h for h in S["best_history"] if str(h.get("date", ""))[:7] == today[:7] and str(h.get("date")) < today
+            and h.get("best")]
+    top = max(days, key=lambda h: h["best"], default=None)
+    f = bt["fleet"]
+    if not top or (f.get("best") or 0) >= top["best"]:
+        return journey(f.get("best"), f.get("at"), f.get("name"), solo_ths, now)
+    day = datetime.strptime(top["date"], "%Y-%m-%d").replace(tzinfo=local_now().tzinfo)
+    start, end = day.timestamp(), (day + timedelta(days=1)).timestamp()
+    at = top.get("at") if isinstance(top.get("at"), (int, float)) and start <= top["at"] <= end else None
+    done = (top.get("typical") or 0) * 2 ** 32 * ((end - at) / (end - start) if at else 0)
+    done += sum((h.get("typical") or 0) * 2 ** 32 for h in S["best_history"] if top["date"] < str(h.get("date", "")) < today)
+    done += solo45_hashes_since(S["daily"].get("since") or now, solo_ths, now)
+    need = top["best"] * 2 ** 32
+    return {"best": top["best"], "at": at or end, "at_known": bool(at), "date": top["date"], "name": top.get("name"),
+            "ths": solo_ths, "progress": done / need, "chance": 1 - math.exp(-done / need),
+            "expected_s": need / (solo_ths * 1e12) if solo_ths else None}
+
+
 def miner_extras(m, now):
     """Electricity cost, 24 h uptime, temperature trend and pool-measured hashrate (lock held)."""
     rows = [r for r in S["temps"].get(m.get("name"), []) if r[0] >= now - 86400]
@@ -1923,7 +1946,8 @@ def snapshot():
             "best_today": bt,
             "best_round": br,
             "journey": {"today": journey(bt["fleet"]["best"], bt["fleet"]["at"], bt["fleet"]["name"], solo_ths, now),
-                        "round": journey(lead.get("best"), lead.get("at"), lead.get("name"), solo_ths, now)},
+                        "round": journey(lead.get("best"), lead.get("at"), lead.get("name"), solo_ths, now),
+                        "month": month_journey(bt, solo_ths, now)},
             "miner_best_ever": dict(S["ever"]),
             "best_history": S["best_history"][-30:],
             "tuning": tuning_history[-60:],

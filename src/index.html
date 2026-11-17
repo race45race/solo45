@@ -436,6 +436,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <div class="card">
         <h2>Luck &amp; work <span class="muted">how much hashing you've done compared with what a block takes</span></h2>
         <div id="workBox"><span class="faint">Collecting…</span></div>
+        <div class="journey" id="monthJourney" style="display:none;margin-top:16px"></div>
         <h2 style="margin-top:16px">Best share history <span class="muted">each day's winner</span></h2>
         <div class="tablewrap">
           <table>
@@ -1652,11 +1653,14 @@ function renderJourney(id, j, nowMs, what) {
   if (!j || !j.best) { el.style.display = "none"; return; }
   const p = j.progress || 0, scale = Math.max(1.25, p * 1.05), pc = v => v >= 0.001 ? (v * 100).toFixed(1) + "%" : "<0.1%";
   el.style.display = "";
-  el.innerHTML = `<div class="jt">Journey to beat ${what} (${fmtDiff(j.best)}${j.name ? ", " + esc(j.name) : ""})</div>
+  // a past day's best (this month's card): its date, and "at least" when that day didn't keep the share's time
+  const day = j.date ? new Date(j.date + "T12:00:00").toLocaleDateString([], {month: "short", day: "numeric"}) : "";
+  const least = j.at_known === false ? "at least " : "";
+  el.innerHTML = `<div class="jt">Journey to beat ${what} (${fmtDiff(j.best)}${j.name ? ", " + esc(j.name) : ""}${day ? ", " + day : ""})</div>
     <div class="jbar" title="${pc(p)} of the average work it takes to beat it"><span style="width:${Math.min(100, p / scale * 100)}%"></span><i class="jexp" style="left:${100 / scale}%"></i></div>
-    <div class="js">Solo45 has been mining for <b>${fmtDur(Math.max(0, nowMs / 1000 - j.at))}</b> since ${what} of <b>${fmtDiff(j.best)}</b>.<br>
+    <div class="js">Solo45 has been mining for ${least}<b>${fmtDur(Math.max(0, nowMs / 1000 - j.at))}</b> since ${what} of <b>${fmtDiff(j.best)}</b>.<br>
     ${j.expected_s ? `At the current ${fmtTH(j.ths)}, it takes about <b>${fmtDur(j.expected_s)}</b> on average to beat it.<br>` : ""}
-    That's <b>${pc(p)}</b> of that expected work done, with a <b>${pc(j.chance)}</b> chance of having beaten it by now.</div>`;
+    That's ${least}<b>${pc(p)}</b> of that expected work done, with a <b>${pc(j.chance)}</b> chance of having beaten it by now.</div>`;
 }
 
 // ---- best share by miner: a round since the owner last pressed Refresh, next to today and all time
@@ -1731,6 +1735,7 @@ function renderWork(s) {
       <td class="first">${esc(h.date)}</td><td class="r num">${fmtDiff(h.best)}</td><td>${esc(h.name || "—")}</td>
       <td class="r num">${h.typical ? fmtRatio(h.best / h.typical) : "—"}</td><td>${luckPill(h.tag)}</td></tr>`).join("")
     : `<tr><td class="first faint" colspan="5">The first day is saved at midnight.</td></tr>`;
+  renderJourney("monthJourney", (s.journey || {}).month, s.now_ms, "this month's best share");
 }
 
 // ---- network & node

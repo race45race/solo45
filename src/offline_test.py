@@ -1005,9 +1005,34 @@ except Exception as e:
 check("journey to beat the best share: work since it from the history, chance, today and round in the snapshot",
       abs(_w1 - 270e12) < 1 and abs(_w2 - 1300e12) < 1 and abs(_w3 - 120e12) < 1
       and abs(_j["progress"] - 1) < 1e-9 and abs(_j["chance"] - (1 - server.math.exp(-1))) < 1e-9 and abs(_j["expected_s"] - 67.5) < 1e-6
-      and _jnone == (None, None) and isinstance(_jsnap, dict) and set(_jsnap) == {"today", "round"}
+      and _jnone == (None, None) and isinstance(_jsnap, dict) and set(_jsnap) == {"today", "round", "month"}
       and "renderJourney(\"roundJourney\"" in _ihtml and "state.journey.round = null" in _ihtml,
       str((_w1, _w2, _w3, _j, _jnone, _jsnap)))
+
+# journey to beat this month's best share: a past day's share counts from its time (or, unsaved, the end of that day)
+with server.lock:
+    _old = (server.S["best_history"], server.S["daily"], server.S["history"])
+    _d0 = server.datetime(2026, 11, 14, tzinfo=server.local_now().tzinfo).timestamp()
+    server.S["daily"] = {"date": "2026-11-16", "since": _d0 + 2 * 86400, "miners": {}}
+    server.S["history"] = []  # today's work: 2 TH/s for an hour = 7.2e15
+    _hist = [{"date": "2026-10-30", "best": 9e12, "typical": 1.0},  # last month: not this month's best
+             {"date": "2026-11-14", "best": 4e9, "name": "T21", "typical": 1000.0},
+             {"date": "2026-11-15", "best": 1e9, "name": "Bx", "typical": 500.0}]
+    server.S["best_history"] = _hist
+    _now, _need = _d0 + 2 * 86400 + 3600, 4e9 * 2 ** 32
+    _bt = {"fleet": {"best": 2e9, "at": _d0 + 2 * 86400 + 60, "name": "S19"}}
+    _m1 = server.month_journey(_bt, 2.0, _now)  # the 11-14 time was not saved: counted from the end of that day
+    _hist[1]["at"] = _d0 + 6 * 3600  # saved: 3/4 of that day still counts
+    _m2 = server.month_journey(_bt, 2.0, _now)
+    _m3 = server.month_journey({"fleet": dict(_bt["fleet"], best=5e9)}, 2.0, _now)  # today's is the month's best
+    server.S["best_history"], server.S["daily"], server.S["history"] = _old
+check("journey to beat this month's best share: from a past day's time or the end of it, or today's",
+      _m1["best"] == 4e9 and _m1["at_known"] is False and _m1["at"] == _d0 + 86400 and _m1["date"] == "2026-11-14"
+      and abs(_m1["progress"] - (500 * 2 ** 32 + 7.2e15) / _need) < 1e-12
+      and _m2["at_known"] is True and abs(_m2["progress"] - (1250 * 2 ** 32 + 7.2e15) / _need) < 1e-12
+      and _m3["best"] == 5e9 and "date" not in _m3
+      and '"at": bt["fleet"]["at"]' in _src and "renderJourney(\"monthJourney\"" in _ihtml,
+      str((_m1, _m2, _m3)))
 
 # a miner on a Bitcoin Cash pool reports BCH's difficulty: while Solo45 answers, the node's number stays
 with server.lock:
