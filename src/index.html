@@ -198,6 +198,14 @@ button.btn.small { font-size: 12px; padding: 3px 9px; }
 .stat .s { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .meter { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; margin: 8px 0 4px; }
 .meter span { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
+.journey { margin: 2px 0 12px; }
+.journey .jt { font-size: 13px; font-weight: 600; }
+.journey .jbar { position: relative; height: 10px; background: var(--panel-2); border-radius: 5px; margin: 20px 0 8px; }
+.journey .jbar > span { display: block; height: 100%; border-radius: 5px; background: linear-gradient(90deg, var(--ok), var(--solo45)); transition: width .6s; }
+.journey .jexp { position: absolute; top: -5px; bottom: -5px; border-left: 2px dashed var(--muted); }
+.journey .jexp::after { content: "expected"; position: absolute; left: 4px; top: -12px; font-size: 10px; color: var(--muted); white-space: nowrap; }
+.journey .js { font-size: 12px; color: var(--muted); line-height: 1.55; }
+.journey .js b { color: var(--solo45); font-weight: 600; }
 .show-sm { display: none; }
 @media (max-width: 700px) {
   .hide-sm { display: none; }
@@ -359,6 +367,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <button class="btn small primary" id="roundReset" type="button">Refresh</button>
       <span class="muted" id="roundNote">starts a new round for every miner</span>
     </div>
+    <div class="journey" id="roundJourney" style="display:none"></div>
     <div class="tablewrap">
       <table>
         <thead><tr><th class="first">Miner</th><th class="r">This round</th><th class="r">When</th><th class="r">Today</th><th class="r" title="The highest best share seen for this miner: its own record, or the best of any day seen here (a Braiins or Avalon miner resets its own record when it restarts)">All time</th></tr></thead>
@@ -371,6 +380,7 @@ body.privacy .sensitive { filter: blur(6px); }
   <section class="card" style="margin-bottom:12px">
     <h2>Best share today <span class="muted" id="btNote">typical = the best share you'd expect from the hashes each miner has done today</span></h2>
     <div class="feed-head" id="btFleet"></div>
+    <div class="journey" id="btJourney" style="display:none"></div>
     <div class="tablewrap">
       <table>
         <thead><tr><th class="first">Miner</th><th class="r">Best today</th><th class="r">When</th><th class="r">Typical so far</th><th class="r">vs typical</th><th>Luck</th></tr></thead>
@@ -1632,6 +1642,21 @@ function renderBestToday(s) {
       <td class="r num">${fmtDiff(m.typical)}</td>
       <td class="r num">${fmtRatio(m.ratio)}</td>
       <td>${luckPill(m.tag)}</td></tr>`).join("");
+  renderJourney("btJourney", (s.journey || {}).today, s.now_ms, "today's best share");
+}
+
+// ---- journey to beat the best share: Solo45's work since that share against the average work it takes to find a
+// bigger one (best × 2^32 hashes). For fun: every hash is a fresh try, so the next share's odds never build up.
+function renderJourney(id, j, nowMs, what) {
+  const el = $(id);
+  if (!j || !j.best) { el.style.display = "none"; return; }
+  const p = j.progress || 0, scale = Math.max(1.25, p * 1.05), pc = v => v >= 0.001 ? (v * 100).toFixed(1) + "%" : "<0.1%";
+  el.style.display = "";
+  el.innerHTML = `<div class="jt">Journey to beat ${what} (${fmtDiff(j.best)}${j.name ? ", " + esc(j.name) : ""})</div>
+    <div class="jbar" title="${pc(p)} of the average work it takes to beat it"><span style="width:${Math.min(100, p / scale * 100)}%"></span><i class="jexp" style="left:${100 / scale}%"></i></div>
+    <div class="js">Solo45 has been mining for <b>${fmtDur(Math.max(0, nowMs / 1000 - j.at))}</b> since ${what} of <b>${fmtDiff(j.best)}</b>.<br>
+    ${j.expected_s ? `At the current ${fmtTH(j.ths)}, it takes about <b>${fmtDur(j.expected_s)}</b> on average to beat it.<br>` : ""}
+    That's <b>${pc(p)}</b> of that expected work done, with a <b>${pc(j.chance)}</b> chance of having beaten it by now.</div>`;
 }
 
 // ---- best share by miner: a round since the owner last pressed Refresh, next to today and all time
@@ -1652,6 +1677,7 @@ function renderRound(s) {
       <td class="r num">${today[m.name] ? fmtDiff(today[m.name]) : "—"}</td>
       <td class="r num">${ever[m.name] ? fmtDiff(ever[m.name]) : "—"}</td></tr>`).join("")
     : `<tr><td class="first faint" colspan="5">Waiting for the first shares…</td></tr>`;
+  renderJourney("roundJourney", (s.journey || {}).round, s.now_ms, "this round's best share");
 }
 let roundArmed = false;
 $("roundReset").addEventListener("click", async () => {
@@ -1668,7 +1694,7 @@ $("roundReset").addEventListener("click", async () => {
     const r = await fetch("api/dash/round", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
     const j = await r.json();
     if (r.ok) {
-      if (state) { state.best_round = {since: j.since, miners: []}; renderRound(state); }
+      if (state) { state.best_round = {since: j.since, miners: []}; if (state.journey) state.journey.round = null; renderRound(state); }
       $("roundNote").textContent = "New round started for every miner";
     } else $("roundNote").textContent = "Not started: " + (j.error || r.status);
   } catch (e) {

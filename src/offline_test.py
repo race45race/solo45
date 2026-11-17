@@ -986,6 +986,29 @@ check("best-share round: highest first, reset saved",
 server.reset_round()
 check("best-share round: Refresh clears every miner", server.best_round()["miners"] == [])
 
+# journey to beat the best share: Solo45's work since that share, from the 30 s history (a gap keeps the rate)
+with server.lock:
+    _old_h = server.S["history"]
+    server.S["history"] = [[1000, 5.0, {"Solo45": 2.0}], [1030, 5.0, {"Solo45": 4.0, "AtlasPool": 1.0}],
+                           [1090, 1.0, {"AtlasPool": 1.0}], [1120, 1.0]]  # the last is an old-format reading
+    _w1 = server.solo45_hashes_since(1015, 9.0, 1150)  # 2 x 15 + 4 x 60 + 0 x 60 = 270 TH
+    _w2 = server.solo45_hashes_since(500, 9.0, 1150)   # before the history: its oldest rate, 2 x 500 + 270 + 2 x 15
+    _j = server.journey(2.7e14 / 2 ** 32, 1015, "T21", 4.0, 1150)
+    _jnone = (server.journey(0, 1015, "T21", 4.0, 1150), server.journey(5e9, None, "T21", 4.0, 1150))
+    server.S["history"] = []
+    _w3 = server.solo45_hashes_since(100, 2.0, 160)   # no history yet: the current rate
+    server.S["history"] = _old_h
+try:
+    _jsnap = server.snapshot()["journey"]
+except Exception as e:
+    _jsnap = repr(e)
+check("journey to beat the best share: work since it from the history, chance, today and round in the snapshot",
+      abs(_w1 - 270e12) < 1 and abs(_w2 - 1300e12) < 1 and abs(_w3 - 120e12) < 1
+      and abs(_j["progress"] - 1) < 1e-9 and abs(_j["chance"] - (1 - server.math.exp(-1))) < 1e-9 and abs(_j["expected_s"] - 67.5) < 1e-6
+      and _jnone == (None, None) and isinstance(_jsnap, dict) and set(_jsnap) == {"today", "round"}
+      and "renderJourney(\"roundJourney\"" in _ihtml and "state.journey.round = null" in _ihtml,
+      str((_w1, _w2, _w3, _j, _jnone, _jsnap)))
+
 # a miner on a Bitcoin Cash pool reports BCH's difficulty: while Solo45 answers, the node's number stays
 with server.lock:
     _old = (server.S["solo45"], server.S["netdiff"])

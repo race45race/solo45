@@ -1811,6 +1811,34 @@ def reset_round():
     return 200, {"ok": True, "since": rnd["since"]}
 
 
+def solo45_hashes_since(t0, ths_now, now):
+    """Hashes Solo45's miners did since t0, from the 30 s hashrate history (lock held). Each reading's rate
+    counts until the next one, gaps included (the miners keep hashing while the dashboard is down), the
+    newest until now. Before the oldest reading (24 h back), the oldest rate stands in."""
+    total, t_prev, r_prev = 0.0, t0, None
+    for h in S["history"]:
+        if len(h) < 3 or not isinstance(h[2], dict):
+            continue
+        t, r = h[0], h[2].get("Solo45") or 0
+        if t > t0:
+            total += (r if r_prev is None else r_prev) * (t - t_prev)
+            t_prev = t
+        r_prev = r
+    total += (ths_now if r_prev is None else r_prev) * max(0.0, now - t_prev)
+    return total * 1e12
+
+
+def journey(best, at, name, ths, now):
+    """The journey to beat a best share: Solo45's work since that share against the average work it takes
+    to find a bigger one (best x 2^32 hashes), and the chance a bigger one would have come by now (lock held)."""
+    if not best or not at:
+        return None
+    need = best * 2 ** 32
+    done = solo45_hashes_since(at, ths, now)
+    return {"best": best, "at": at, "name": name, "ths": ths, "progress": done / need,
+            "chance": 1 - math.exp(-done / need), "expected_s": need / (ths * 1e12) if ths else None}
+
+
 def miner_extras(m, now):
     """Electricity cost, 24 h uptime, temperature trend and pool-measured hashrate (lock held)."""
     rows = [r for r in S["temps"].get(m.get("name"), []) if r[0] >= now - 86400]
@@ -1884,14 +1912,18 @@ def snapshot():
 
         best = max(up + [m for m in miners if m.get("best")],
                    key=lambda m: m.get("best") or 0, default=None)
+        bt, br, solo_ths = best_today(), best_round(), by_pool.get("Solo45", 0)
+        lead = br["miners"][0] if br["miners"] else {}
         return {
             "now_ms": now_ms(),
             "tip": tip,
             "blocks": S["blocks"][:15],
             "gobrrr": S["gobrrr"],
             "solo45": S["solo45"],
-            "best_today": best_today(),
-            "best_round": best_round(),
+            "best_today": bt,
+            "best_round": br,
+            "journey": {"today": journey(bt["fleet"]["best"], bt["fleet"]["at"], bt["fleet"]["name"], solo_ths, now),
+                        "round": journey(lead.get("best"), lead.get("at"), lead.get("name"), solo_ths, now)},
             "miner_best_ever": dict(S["ever"]),
             "best_history": S["best_history"][-30:],
             "tuning": tuning_history[-60:],
