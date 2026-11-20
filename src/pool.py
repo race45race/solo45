@@ -41,6 +41,8 @@ EN1_SIZE, EN2_SIZE = 4, 8
 CHECK_SPK = b"\x00\x20" + bytes(32)  # stand-in payout script for block checks before a payout address is set
 MAX_CONNS = 2000  # stratum connections in all
 AUTH_WINDOW_S = 120  # a new connection must authorize within this (miners do it within a second)
+SPK_CACHE_MAX = 5000  # usernames remembered as payout addresses; the oldest is forgotten past this
+MAX_AUTHORIZE = 10  # mining.authorize calls one connection may make (a miner makes one)
 
 try:  # glibc keeps memory that Python freed; malloc_trim hands it back to the system (absent elsewhere)
     malloc_trim = ctypes.CDLL("libc.so.6").malloc_trim
@@ -125,6 +127,10 @@ def stratum_prevhash(prev_internal):
 
 
 # ------------------------------------------------------------------------- rpc
+
+def address_plausible(address):
+    """Cheap check before asking the node: bitcoin addresses are 25-90 plain letters and digits."""
+    return 25 <= len(address) <= 90 and address.isascii() and address.isalnum()
 
 class RPCError(Exception):
     pass
@@ -390,6 +396,9 @@ class Worker:
 
     async def authorize(self, params):
         pool = self.pool
+        self.auth_tries = getattr(self, "auth_tries", 0) + 1
+        if self.auth_tries > MAX_AUTHORIZE:
+            raise StratumError(24, "Too many authorize attempts")
         self.user = str(params[0])[:120]
         name = self.user.partition(".")[2]
         address, spk = await pool.payout_for(self.user)
@@ -642,12 +651,16 @@ class Pool:
         return struct.pack(">I", next(self.en1_ids) & 0xFFFFFFFF)
 
     async def script_for(self, address):
+        if not address_plausible(address):
+            return None  # not an address (e.g. a plain worker name): no node lookup, nothing remembered
         if address not in self.spk_cache:
             try:
                 r = await self.call("validateaddress", address)
-                self.spk_cache[address] = bytes.fromhex(r["scriptPubKey"]) if r.get("isvalid") else None
             except RPCError:
                 return None
+            if len(self.spk_cache) >= SPK_CACHE_MAX:
+                self.spk_cache.pop(next(iter(self.spk_cache)))  # forget the oldest: junk usernames can't grow this
+            self.spk_cache[address] = bytes.fromhex(r["scriptPubKey"]) if r.get("isvalid") else None
         return self.spk_cache[address]
 
     def force_default(self):

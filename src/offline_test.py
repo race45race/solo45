@@ -234,15 +234,15 @@ async def pool_tests():
     new_install_on = P.Pool(pool_cfg(), data_dir=tempfile.mkdtemp(prefix="solo45-new-")).force_default()
     older_off = not P.Pool(pool_cfg(), data_dir=old_dir).force_default()
     spk_a, spk_b = b"\x00\x14" + b"\xaa" * 20, b"\x00\x14" + b"\xbb" * 20
-    pool.spk_cache["addrB"] = spk_b
+    pool.spk_cache["bc1qtestbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] = spk_b
     pool.state["settings"]["force_default_address"] = True
-    before_setup = await pool.payout_for("addrB.rig")  # switch on, but no payout address yet: the username's works
-    pool.cfg["default_address"], pool.default_spk = "addrA", spk_a
-    on = await pool.payout_for("addrB.rig")
+    before_setup = await pool.payout_for("bc1qtestbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.rig")  # switch on, but no payout address yet: the username's works
+    pool.cfg["default_address"], pool.default_spk = "bc1qtestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", spk_a
+    on = await pool.payout_for("bc1qtestbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.rig")
     pool.state["settings"]["force_default_address"] = False
-    off = await pool.payout_for("addrB.rig")
+    off = await pool.payout_for("bc1qtestbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.rig")
     check("payout switch", switch.startswith(b"HTTP/1.1 200") and switched_off and new_install_on and older_off
-          and before_setup == ("addrB", spk_b) and on == ("addrA", spk_a) and off == ("addrB", spk_b),
+          and before_setup == ("bc1qtestbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", spk_b) and on == ("bc1qtestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", spk_a) and off == ("bc1qtestbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", spk_b),
           "(%s %s %s %s %s)" % (switched_off, new_install_on, older_off, on[0], off[0]))
 
     # shares: junk that fails the difficulty check isn't remembered; a block share is never called stale
@@ -1177,6 +1177,36 @@ check("reject rate over the last hour: warns above 2%, ignores few shares, resta
       and abs(_r_lo["rej_rate"] - 5 / 1005) < 1e-9 and _st_low[0] == "ok" and _r_few["rej_rate"] is None
       and _r_new["rej_rate"] is None and abs(_r_old["rej_rate"] - 2 / 1902) < 1e-9,
       "(hi %s %s, lo %s %s, few %s, restart %s, old %s)" % (_r_hi["rej_rate"], _st_rej, _r_lo["rej_rate"], _st_low, _r_few["rej_rate"], _r_new["rej_rate"], _r_old["rej_rate"]))
+# v0.1.65: junk usernames (ckpool bce5fc5 class): no node lookup for non-addresses, capped cache, authorize limit
+class _SpkStub:
+    def __init__(self):
+        self.spk_cache, self.calls = {}, 0
+
+    async def call(self, method, *a):
+        self.calls += 1
+        return {"isvalid": a[0].startswith("bc1q"), "scriptPubKey": "0014" + "00" * 20}
+
+
+_sp = _SpkStub()
+_lp = asyncio.new_event_loop()
+_j1 = _lp.run_until_complete(P.Pool.script_for(_sp, "Bitaxe1"))            # plain worker name: no lookup
+_j2 = _lp.run_until_complete(P.Pool.script_for(_sp, "bc1q" + "a" * 38))    # a real-looking address: looked up
+_j3 = _lp.run_until_complete(P.Pool.script_for(_sp, "bc1q" + "a" * 38))    # ...and remembered
+for _i in range(P.SPK_CACHE_MAX + 50):
+    _lp.run_until_complete(P.Pool.script_for(_sp, "x%029d" % _i))          # plausible junk names
+_jw = P.Worker.__new__(P.Worker)
+_jw.pool, _jw.auth_tries = None, P.MAX_AUTHORIZE
+try:
+    _lp.run_until_complete(_jw.authorize(["bc1qfoo", "x"]))
+    _jlim = False
+except P.StratumError:
+    _jlim = True
+_lp.close()
+check("junk usernames: no lookup for worker names, address cache capped, authorize limited per connection",
+      _j1 is None and _j2 is not None and _j3 == _j2 and len(_sp.spk_cache) <= P.SPK_CACHE_MAX
+      and _sp.calls == 1 + P.SPK_CACHE_MAX + 50 and _jlim and not P.address_plausible("x" * 24)
+      and not P.address_plausible("bc1q-" + "a" * 30) and P.address_plausible("bc1p" + "a" * 58),
+      "(calls %d, cache %d, limit %s)" % (_sp.calls, len(_sp.spk_cache), _jlim))
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)
