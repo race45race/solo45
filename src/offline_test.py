@@ -580,6 +580,10 @@ server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
       and server.pool_name("solo.ckpool.org", 3337) == "solo.ckpool.org")
+check("miners on Solo45 Core's port count as Solo45 Core, and both are your own pools",
+      server.pool_name("192.168.1.5", server.CORE_STRATUM_PORT) == "Solo45 Core"
+      and server.pool_name("solo.example.com", server.CORE_STRATUM_PORT) == "solo.example.com"
+      and set(server.OWN_POOLS) == {"Solo45", "Solo45 Core"})
 check("only 172.16-31 counts as a private pool address",
       server.pool_name("172.16.0.5", server.STRATUM_PORT) == "Solo45"
       and server.pool_name("172.31.1.1", server.STRATUM_PORT) == "Solo45"
