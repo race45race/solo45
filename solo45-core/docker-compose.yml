@@ -1,0 +1,32 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: solo45-core_pool_1
+      APP_PORT: 8346
+
+  pool:
+    image: ghcr.io/race45race/solo45-core:v0.0.3@sha256:d83aee407ed1a589355b39fd101d1b03fbd538aaf300d54547cf185b7df067e6
+    user: "1000:1000"
+    restart: on-failure
+    stop_grace_period: 30s  # the pool finishes sending a found block to the node before it stops
+    command: ["serve"]
+    ports:
+      - "3346:3346"  # stratum for miners (keep it on your home network: don't forward it to the internet)
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      SOLO45_DATA_DIR: /data
+      SOLO45_LOG_FILE: /data/pool.log
+      SOLO45_STRATUM_PORT: "3346"
+      SOLO45_API_PORT: "3386"
+      SOLO45_WEB_PORT: "8346"  # the status page, only through the Umbrel login
+      SOLO45_API_TOKEN: ${APP_SOLO45_CORE_API_TOKEN}
+      BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}  # new blocks the moment the node has them
+      BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
+      BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
+      BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}
+    networks:
+      default:
+        ipv4_address: ${APP_SOLO45_CORE_IP}

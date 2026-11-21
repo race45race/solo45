@@ -1,0 +1,44 @@
+manifestVersion: 1
+id: solo45-core
+category: bitcoin
+name: Solo45 Core
+version: "0.0.3"
+tagline: A fast solo mining pool engine in Rust (test version)
+icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
+description: >-
+  ⚙️ Setup: open Solo45 Core after installing and enter your payout address. Then point a miner at your Umbrel's IP address on port 3346, for example stratum+tcp://192.168.1.50:3346. Keep a backup pool set on every miner. Keep port 3346 on your home network: don't forward it to the internet.
+
+
+  Solo45 Core is the Solo45 pool rewritten in Rust: it builds work from your own Bitcoin node and pays any block you find straight to your address, with no pool fee. It runs next to the Solo45 app on its own port, so you can move miners over one at a time.
+
+
+  • Same work as Solo45, byte for byte, with new blocks by ZMQ and an empty job to your miners within milliseconds.
+
+  • Every job checked by your node (getblocktemplate proposal mode); a found block is saved first, then sent, and resent if the node is down or starting.
+
+  • A simple status page: hashrate, miners, shares, best shares, block switch time and the node's block check.
+
+
+  This is a test version. The template policy and stall guard from Solo45 are not in it yet.
+releaseNotes: >-
+  First packaged test version of Solo45 Core, with a status page and the payout address setting.
+
+developer: race45race
+website: https://github.com/race45race/solo45-core
+dependencies:
+  - bitcoin
+repo: https://github.com/race45race/solo45-core
+support: https://github.com/race45race/solo45-core/issues
+
+port: 4546
+gallery: []
+path: ""
+
+defaultUsername: ""
+defaultPassword: ""
+
+backupIgnore:
+  - data/pool.log*
+
+submitter: race45race
+submission: https://github.com/race45race/solo45-core
