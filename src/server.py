@@ -39,6 +39,7 @@ SOLO45 = os.environ.get("SOLO45_API_BASE") or "http://127.0.0.1:3380"
 # Solo45 Core (the Rust pool app), if installed: its read-only status and share feed, and the port its miners use
 CORE = (os.environ.get("SOLO45_CORE_URL") or "http://10.21.22.147:8346").rstrip("/")
 CORE_STRATUM_PORT = os.environ.get("SOLO45_CORE_STRATUM_PORT") or "3346"
+CORE_SV2_PORT = os.environ.get("SOLO45_CORE_SV2_PORT") or "34255"  # Core's Stratum V2 port (e.g. a Bitaxe in SV2 mode)
 OWN_POOLS = ("Solo45", "Solo45 Core")  # both build blocks from your node and pay your address
 CFG_PATH = os.path.join(DATA, "config.json")
 HISTORY_PATH = os.path.join(DATA, "history.json")
@@ -641,7 +642,7 @@ def pool_name(host, port):
     private = host.startswith(("192.168.", "10.")) or bool(PRIVATE_172.match(host)) or host.endswith(".local")
     if private and str(port) == STRATUM_PORT:
         return "Solo45"
-    if private and str(port) == CORE_STRATUM_PORT:
+    if private and str(port) in (CORE_STRATUM_PORT, CORE_SV2_PORT):
         return "Solo45 Core"
     if private and str(port) in CFG["pools"]:
         return CFG["pools"][str(port)]

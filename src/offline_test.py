@@ -582,6 +582,7 @@ check("miners on the app's stratum port count as Solo45", server.pool_name("192.
       and server.pool_name("solo.ckpool.org", 3337) == "solo.ckpool.org")
 check("miners on Solo45 Core's port count as Solo45 Core, and both are your own pools",
       server.pool_name("192.168.1.5", server.CORE_STRATUM_PORT) == "Solo45 Core"
+      and server.pool_name("192.168.1.5", 34255) == "Solo45 Core"  # Core's Stratum V2 port
       and server.pool_name("solo.example.com", server.CORE_STRATUM_PORT) == "solo.example.com"
       and set(server.OWN_POOLS) == {"Solo45", "Solo45 Core"})
 check("only 172.16-31 counts as a private pool address",
