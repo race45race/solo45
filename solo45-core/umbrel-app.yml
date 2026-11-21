@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 Core
-version: "0.0.3"
+version: "0.0.4"
 tagline: A fast solo mining pool engine in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -16,12 +16,16 @@ description: >-
 
   • Every job checked by your node (getblocktemplate proposal mode); a found block is saved first, then sent, and resent if the node is down or starting.
 
-  • A simple status page: hashrate, miners, shares, best shares, block switch time and the node's block check.
+  • Template policy: leave out inscriptions, Runes, large OP_RETURN data, bare multisig or low fee rates; each rule Off, Watch (only count) or Filter.
+
+  • Stall guard: if a peer holds up a new block, Core disconnects it after 60 seconds (adjustable), so your miners don't spend 10 minutes on an old block.
+
+  • A status page: hashrate, miners, shares, best shares, block switch time, the node's block check, settings and backup/restore.
 
 
-  This is a test version. The template policy and stall guard from Solo45 are not in it yet.
+  This is a test version.
 releaseNotes: >-
-  First packaged test version of Solo45 Core, with a status page and the payout address setting.
+  Stall guard, template policy (Off, Watch or Filter per rule, same results as Solo45's) and backup/restore, all set on the status page. Your payout address, settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
