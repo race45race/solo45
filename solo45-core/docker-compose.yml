@@ -7,13 +7,14 @@ services:
       APP_PORT: 8346
 
   pool:
-    image: ghcr.io/race45race/solo45-core:v0.0.5@sha256:2148983d5126cc98da3c39ffc0dd2990233149bf927dbf4d7032f8c04b19e791
+    image: ghcr.io/race45race/solo45-core:v0.0.6@sha256:4001b16296b3c35ec6a0ece9efcd1c0d90fc43f2c679880136efd749f058b68a
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s  # the pool finishes sending a found block to the node before it stops
     command: ["serve"]
     ports:
       - "3346:3346"  # stratum for miners (keep it on your home network: don't forward it to the internet)
+      - "34255:34255"  # Stratum V2 (encrypted) for SV2 miners and the Translator Proxy
     volumes:
       - ${APP_DATA_DIR}/data:/data
     environment:
@@ -22,6 +23,7 @@ services:
       SOLO45_STRATUM_PORT: "3346"
       SOLO45_API_PORT: "3386"
       SOLO45_WEB_PORT: "8346"  # the status page, only through the Umbrel login
+      SOLO45_SV2_PORT: "34255"  # Stratum V2; its authority key is made on first start (data/sv2-authority.json)
       SOLO45_WEB_READERS: "10.21.22.146"  # the Solo45 app's dashboard may read Core's status and share feed (nothing else)
       SOLO45_API_TOKEN: ${APP_SOLO45_CORE_API_TOKEN}
       BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}  # new blocks the moment the node has them
