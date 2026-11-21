@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 Core
-version: "0.0.7"
+version: "0.0.8"
 tagline: A fast solo mining pool engine in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  Stratum V2 standard channels: miners that mine header-only over SV2, such as Braiins OS (and AxeOS in "standard" mode), can now use the encrypted port 34255 directly. The status page shows the Braiins OS pool URL. Extended channels and the Stratum V1 port (3346) are unchanged. Your settings and miners carry over.
+  Status page: live shares and each miner's best share ever (kept across restarts and updates). Every release is now also tested by finding real blocks on a private test chain (Stratum V1, both kinds of Stratum V2 channel, a node that refuses a block, the stall guard) before it reaches the store. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
