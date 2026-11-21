@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.65"
+version: "0.1.66"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  Pool hardening (same kind of fix as a recent ckpool security update): usernames that are not bitcoin addresses no longer cost a lookup on your node, the pool remembers at most 5,000 addresses, and a connection that logs in more than 10 times is refused. Your miners and settings are unchanged.
+  Dashboard: if you also run Solo45 Core, it now shows next to Solo45. Core's miners are listed under "Solo45 Core" and count with Solo45 in your block odds and best shares, and Core's block switch time, found blocks and alerts show too. The pool itself is unchanged.
 
 developer: race45race
 website: https://github.com/race45race/solo45

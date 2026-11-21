@@ -7,7 +7,7 @@ services:
       APP_PORT: 8346
 
   pool:
-    image: ghcr.io/race45race/solo45-core:v0.0.4@sha256:5437566ca412b764eb69e53e97e076aa50ac58dc26f5932fc26160592ac0c89b
+    image: ghcr.io/race45race/solo45-core:v0.0.5@sha256:2148983d5126cc98da3c39ffc0dd2990233149bf927dbf4d7032f8c04b19e791
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s  # the pool finishes sending a found block to the node before it stops
@@ -22,6 +22,7 @@ services:
       SOLO45_STRATUM_PORT: "3346"
       SOLO45_API_PORT: "3386"
       SOLO45_WEB_PORT: "8346"  # the status page, only through the Umbrel login
+      SOLO45_WEB_READERS: "10.21.22.146"  # the Solo45 app's dashboard may read Core's status and share feed (nothing else)
       SOLO45_API_TOKEN: ${APP_SOLO45_CORE_API_TOKEN}
       BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}  # new blocks the moment the node has them
       BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/

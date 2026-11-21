@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 Core
-version: "0.0.4"
+version: "0.0.5"
 tagline: A fast solo mining pool engine in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -25,7 +25,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  Stall guard, template policy (Off, Watch or Filter per rule, same results as Solo45's) and backup/restore, all set on the status page. Your payout address, settings and miners carry over.
+  The Solo45 dashboard can now show Solo45 Core next to Solo45 (update Solo45 too): Core's miners, block switch time and found blocks, counted in your odds. It can only read Core's status, never change it. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
