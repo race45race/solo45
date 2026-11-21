@@ -2820,6 +2820,21 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
             return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/core/worker" and CORE:
+            # per-miner difficulty for Solo45 Core (it accepts it only from this container; pool settings, the payout
+            # address, policy and restores stay on Core's own page). Solo45's API token is not sent along.
+            req = urllib.request.Request(CORE + "/api/worker", json.dumps(data).encode(), {"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    code, reply = r.status, json.load(r)
+            except urllib.error.HTTPError as e:
+                try:
+                    code, reply = e.code, json.load(e)
+                except ValueError:
+                    code, reply = e.code, {"error": "HTTP %d" % e.code}
+            except (OSError, ValueError) as e:
+                code, reply = 502, {"error": "Solo45 Core is not responding: %s" % e}
+            return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/voltfloor":
             code, reply = set_volt_floor(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")

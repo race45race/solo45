@@ -1240,22 +1240,24 @@ function renderSolo(s) {
     $("refreshS").value = so.template_refresh_s;
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
   }
-  const ws = (so.workers || []).slice().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
-  soloNames = ws.map(w => w.name);
-  const sig = ws.map(w => w.name + JSON.stringify(w.override || {})).join("|");
+  // Solo45 Core's miners too (when it's installed): their settings go to Core, through this dashboard
+  const coreWs = s.core && s.core.up ? (s.core.workers || []).map(w => Object.assign({}, w, {core: true})) : [];
+  const ws = (so.workers || []).concat(coreWs).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}) || (a.core ? 1 : 0) - (b.core ? 1 : 0));
+  soloNames = ws.map(w => ({name: w.name, core: !!w.core}));
+  const sig = ws.map(w => (w.core ? "c:" : "") + w.name + JSON.stringify(w.override || {})).join("|");
   const editing = document.activeElement && $("soloWorkers").contains(document.activeElement);
   if (sig !== soloSig && !editing) {
     soloSig = sig;
     $("soloWorkers").innerHTML = ws.length ? ws.map((w, i) => `<tr>
-      <td class="first"><div class="mname">${esc(w.name)}</div><div class="msub">${esc(w.ip)}</div></td>
+      <td class="first"><div class="mname">${esc(w.name)}${w.core ? ' <span class="pill" title="This miner is on Solo45 Core; its setting is saved there">Core</span>' : ""}</div><div class="msub">${esc(w.ip)}</div></td>
       <td>${esc(settingText(w.override))}</td>
       <td class="r num" id="sd${i}"></td><td class="r num" id="st${i}"></td><td class="r num" id="ss${i}"></td>
-      <td><div class="setting-ctl" data-name="${esc(w.name)}">
+      <td><div class="setting-ctl" data-name="${esc(w.name)}" data-core="${w.core ? 1 : ""}">
         <select><option value="auto">Automatic</option><option value="share_seconds">Seconds per share</option><option value="diff">Fixed difficulty</option></select>
         <input type="number" min="0" step="any" placeholder="value" style="display:none">
         <button class="btn small" type="button">Save</button>
       </div></td></tr>`).join("")
-      : `<tr><td class="first faint" colspan="6">No miners on Solo45 right now.</td></tr>`;
+      : `<tr><td class="first faint" colspan="6">No miners on Solo45 or Solo45 Core right now.</td></tr>`;
   }
   ws.forEach((w, i) => {
     const el = id => $(id + i);
@@ -1276,26 +1278,26 @@ $("soloAll").querySelector("button").addEventListener("click", async e => {
   const mode = $("soloAll").querySelector("select").value, val = parseFloat($("soloAll").querySelector("input").value);
   const note = $("soloAllNote"), names = soloNames.slice();
   if (mode !== "auto" && !(val > 0)) { note.textContent = "Enter a number first."; return; }
-  if (!names.length) { note.textContent = "No miners on Solo45 right now."; return; }
+  if (!names.length) { note.textContent = "No miners on Solo45 or Solo45 Core right now."; return; }
   const body = mode === "auto" ? {} : {[mode]: val};
-  if (!confirm(`Set all ${names.length} miners on Solo45 to “${settingText(body)}”?`)) return;
+  if (!confirm(`Set all ${names.length} miners on Solo45${names.some(n => n.core) ? " and Solo45 Core" : ""} to “${settingText(body)}”?`)) return;
   e.target.disabled = true;
   const failed = [];
-  for (const [i, name] of names.entries()) {
+  for (const [i, m] of names.entries()) {
     note.textContent = `Saving ${i + 1} of ${names.length}…`;
-    if (!await saveSetting(name, body, $("soloNote"))) failed.push(name);
+    if (!await saveSetting(m.name, body, $("soloNote"), m.core)) failed.push(m.name + (m.core ? " (Core)" : ""));
   }
   e.target.disabled = false;
   note.textContent = failed.length ? `Saved ${names.length - failed.length} of ${names.length}; not saved: ${failed.join(", ")}`
     : `All ${names.length} miners are now on “${settingText(body)}”.`;
 });
 
-async function saveSetting(name, body, note) {
+async function saveSetting(name, body, note, core) {
   note.textContent = "Saving…";
   try {
-    const r = await fetch("/api/solo45/worker", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({name}, body))});
+    const r = await fetch(core ? "/api/core/worker" : "/api/solo45/worker", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({name}, body))});
     const j = await r.json();
-    note.textContent = r.ok ? `Saved: ${name} is now on “${settingText(j.override)}”.` : `Not saved: ${j.error || r.status}`;
+    note.textContent = r.ok ? `Saved: ${name}${core ? " (Solo45 Core)" : ""} is now on “${settingText(j.override)}”.` : `Not saved: ${j.error || r.status}`;
     return r.ok;
   } catch (e) {
     note.textContent = "Not saved: " + e.message;
@@ -1632,7 +1634,7 @@ $("soloWorkers").addEventListener("click", async e => {
   const mode = ctl.querySelector("select").value, val = parseFloat(ctl.querySelector("input").value);
   if (mode !== "auto" && !(val > 0)) { $("soloNote").textContent = "Enter a number first."; return; }
   e.target.disabled = true;
-  await saveSetting(ctl.dataset.name, mode === "auto" ? {} : {[mode]: val}, $("soloNote"));
+  await saveSetting(ctl.dataset.name, mode === "auto" ? {} : {[mode]: val}, $("soloNote"), !!ctl.dataset.core);
   e.target.disabled = false;
 });
 
