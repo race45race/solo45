@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 Core
-version: "0.0.9"
+version: "0.0.10"
 tagline: A fast solo mining pool engine in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  A 24-hour hashrate chart on the status page; Stratum V2 miners now start at their remembered difficulty after a restart and follow per-miner difficulty settings, like Stratum V1 miners; Stratum V2 block switch times; a link to the Solo45 dashboard; Core's own icon. Load-tested with 120 miners. Your settings and miners carry over.
+  The Solo45 dashboard can now set your Core miners' share difficulty (only that: the payout address, pool settings and policy stay on this page). Block odds on the status page. API notes in the README. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
