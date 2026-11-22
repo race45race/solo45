@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.68"
+version: "0.1.69"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  Dashboard: miners on Solo45 Core now appear in the per-miner difficulty settings, and saving changes them on Core (needs Solo45 Core 0.0.10). The pool itself is unchanged.
+  Dashboard: a Braiins OS miner on Solo45 Core's Stratum V2 port now shows as Solo45 Core and counts in your odds (it showed as an unknown pool). Core miners' automatic difficulty now reads 1 share / 10 s. The pool itself is unchanged.
 
 developer: race45race
 website: https://github.com/race45race/solo45
