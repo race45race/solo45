@@ -1013,10 +1013,12 @@ function renderMiners(s) {
       const ref = m.ths_long || m.ths;  // the Hexes' older firmware has no 10-minute average
       const seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
       const open = openMiners.has(m.name);
+      // a miner on Solo45 Core: its protocol as Core reports it (V1, SV2 extended / standard)
+      const proto = m.pool === "Solo45 Core" ? (((s.core || {}).workers || []).find(w => w.name === m.name) || {}).protocol : null;
       const powerTitle = m.power_source === "psu" ? `Measured by the power supply${m.power_estimate ? ` (Braiins estimates ${Math.round(m.power_estimate)} W)` : ""}${m.psu_v ? `, ${m.psu_v.toFixed(2)} V` : ""}`
         : m.power_source === "estimate" ? "Braiins OS estimate (this power supply doesn't report its watts)" : "";
       rows.push(`<tr class="mrow${open ? " open" : ""}" data-miner="${esc(m.name)}" tabindex="0" aria-expanded="${open}" style="${off ? "opacity:.55" : ""}">
-        <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}</div></td>
+        <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${proto && proto.startsWith("SV2") ? ' · <span title="Encrypted Stratum V2 to Solo45 Core">SV2</span>' : ""}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}</div></td>
         <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
@@ -1025,7 +1027,7 @@ function renderMiners(s) {
       </tr>`);
       const d = (k, v) => `<div><span class="k">${k}</span><span class="v">${v}</span></div>`;
       rows.push(`<tr class="mdetail" data-for="${esc(m.name)}"${open ? "" : " hidden"}><td colspan="6"><div class="dgrid">
-        ${d("Pool", esc(m.pool) + (m.on_fallback ? ' <span class="hot">(backup)</span>' : ""))}
+        ${d("Pool", esc(m.pool) + (proto ? ' <span class="muted">· ' + esc(proto === "V1" ? "Stratum V1" : proto.replace("SV2", "Stratum V2")) + '</span>' : "") + (m.on_fallback ? ' <span class="hot">(backup)</span>' : ""))}
         ${d("Efficiency", off ? "—" : jth + " J/TH")}
         ${d("Cost a day", m.cost_day ? esc(cur()) + m.cost_day.toFixed(2) : "—")}
         ${d("Fan", m.fan != null ? Math.round(m.fan) + "%" : "—")}
