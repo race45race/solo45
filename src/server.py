@@ -637,8 +637,16 @@ STRATUM_PORT = os.environ.get("SOLO45_STRATUM_PORT") or "3333"  # the port miner
 PRIVATE_172 = re.compile(r"172\.(1[6-9]|2[0-9]|3[01])\.")  # only 172.16-31 is private
 
 
+def split_pool_url(url):
+    """A miner's pool URL -> (host, port), whatever the scheme: stratum+tcp://h:3333, stratum2+tcp://h:34255/<SV2 key>
+    (Braiins OS's Stratum V2 form), or a bare h:port."""
+    rest = re.sub(r"^[A-Za-z0-9+.-]+://", "", (url or "").strip()).split("/", 1)[0]
+    hp = rest.rsplit(":", 1)
+    return hp[0], (hp[1] if len(hp) > 1 else "")
+
+
 def pool_name(host, port):
-    host = (host or "").replace("stratum+tcp://", "").strip("/")
+    host = re.sub(r"^[A-Za-z0-9+.-]+://", "", host or "").split("/", 1)[0]
     private = host.startswith(("192.168.", "10.")) or bool(PRIVATE_172.match(host)) or host.endswith(".local")
     if private and str(port) == STRATUM_PORT:
         return "Solo45"
@@ -788,8 +796,7 @@ def poll_braiins(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
-        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        host, port = split_pool_url(active.get("URL", ""))
         user = active.get("User", "")
     fan_pcts = [f.get("Speed") for f in fans if f.get("Speed") is not None]
     met = braiins_metrics(ip)
@@ -859,8 +866,7 @@ def poll_mara(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
-        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        host, port = split_pool_url(active.get("URL", ""))
         user = active.get("User", "")
     return {
         "kind": "mara",
@@ -911,8 +917,7 @@ def poll_bitmain(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
-        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        host, port = split_pool_url(active.get("URL", ""))
         user = active.get("User", "")
     return {
         "kind": "bitmain",
@@ -995,8 +1000,7 @@ def poll_avalon(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
-        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
+        host, port = split_pool_url(active.get("URL", ""))
         user = active.get("User", "")
     fan_now = avalon_num(f, "FanR")
     avg_temp = avalon_num(f, "TAvg") or (sum(chip_temps) / len(chip_temps) if chip_temps else None)
