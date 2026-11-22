@@ -7,7 +7,7 @@ services:
       APP_PORT: 8346
 
   pool:
-    image: ghcr.io/race45race/solo45-core:v0.0.15@sha256:427e1811bc3d2d6db62d1c0924d56e140987d413656d23764175640cefafa259
+    image: ghcr.io/race45race/solo45-core:v0.0.16@sha256:ee84e835ce63723d4f21e725dbda06e823fb5040d4838dc4d11f227340cd82e6
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s  # the pool finishes sending a found block to the node before it stops
