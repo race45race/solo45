@@ -7,7 +7,7 @@ services:
       APP_PORT: 8099
 
   pool:
-    image: ghcr.io/race45race/solo45:v0.1.70@sha256:876b2ccd181470045b3843a24b94d7105404c3cbf994d2ce01aa074206c2f9bc
+    image: ghcr.io/race45race/solo45:v0.1.71@sha256:62c25df47c38fd2de86418a51c716e9419de0d42b5fb88b4700df408297ae9e9
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s  # the pool finishes sending a found block to the node before it stops
@@ -28,7 +28,7 @@ services:
         ipv4_address: ${APP_SOLO45_POOL_IP}
 
   dashboard:
-    image: ghcr.io/race45race/solo45:v0.1.70@sha256:876b2ccd181470045b3843a24b94d7105404c3cbf994d2ce01aa074206c2f9bc
+    image: ghcr.io/race45race/solo45:v0.1.71@sha256:62c25df47c38fd2de86418a51c716e9419de0d42b5fb88b4700df408297ae9e9
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s
