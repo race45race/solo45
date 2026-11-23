@@ -7,7 +7,7 @@ services:
       APP_PORT: 8346
 
   pool:
-    image: ghcr.io/race45race/solo45-core:v0.0.17@sha256:7cf0a061018b0ac898ea3d4629a682cae41a3b6994b6f803a8816e55eba23753
+    image: ghcr.io/race45race/solo45-core:v0.0.18@sha256:1e6713b46fc412cad25daf1d5d6115baca704e3e4e25559d83cf38bce43e161c
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s  # the pool finishes sending a found block to the node before it stops
@@ -24,7 +24,6 @@ services:
       SOLO45_API_PORT: "3386"
       SOLO45_WEB_PORT: "8346"  # the status page, only through the Umbrel login
       SOLO45_SV2_PORT: "34255"  # Stratum V2; its authority key is made on first start (data/sv2-authority.json)
-      SOLO45_WEB_READERS: "10.21.22.146"  # the Solo45 app's dashboard may read Core's status and set per-miner difficulty (nothing else)
       SOLO45_API_TOKEN: ${APP_SOLO45_CORE_API_TOKEN}
       BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}  # new blocks the moment the node has them
       BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
