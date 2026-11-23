@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 Core
-version: "0.0.16"
+version: "0.0.17"
 tagline: A fast solo mining pool engine in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  Smoother Stratum V2 difficulty: one quiet minute no longer cuts a miner's difficulty by three (Braiins miners could bounce for 20 minutes after connecting). The Solo45 dashboard can now be allowed in by name as well as by address. Your settings and miners carry over.
+  Stratum V2: changing the payout address no longer throws away a block a miner finds on its previous job in that same moment (it is sent and pays the old address, as on Stratum V1). Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
