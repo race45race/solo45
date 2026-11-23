@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 SV2
-version: "0.0.24"
+version: "0.0.25"
 tagline: A fast solo mining pool with Stratum V2, in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -22,12 +22,12 @@ description: >-
 
   • Stratum V2 (encrypted) on port 34255, next to Stratum V1 on 3346.
 
-  • A status page: hashrate, miners (with their temperature, fan and watts), shares, best shares, block switch time, the node's block check, settings and backup/restore.
+  • The full Solo45 dashboard (Home, Details, Settings): fleet hashrate and odds, every miner's temperature, fan, watts and tuning, best shares and journeys, block timing, luck, alerts; plus best shares, block switch time, the node's block check, settings and backup/restore.
 
 
   This is a test version.
 releaseNotes: >-
-  Canaan Avalon miners (like the Nano 3S) now show their temperature, fan and watts in the miner list too. Your settings and miners carry over.
+  Solo45 SV2 now has the full Solo45 dashboard of its own (Home, Details and Settings: fleet, odds, best shares and journeys, tuning report, Avalon controls, block timing, luck, network and node, alerts, backup), reading only this pool. The pool itself is unchanged; your settings and miners carry over. You can still install Solo45 SV2 on its own.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core

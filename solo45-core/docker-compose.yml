@@ -3,8 +3,8 @@ version: "3.7"
 services:
   app_proxy:
     environment:
-      APP_HOST: solo45-core_pool_1
-      APP_PORT: 8346
+      APP_HOST: solo45-core_dashboard_1
+      APP_PORT: 8099
 
   pool:
     image: ghcr.io/race45race/solo45-core:v0.0.24@sha256:e4c671a3615206c00e72c04bfd1aa007a6abca37ce881e17a78421418f83e782
@@ -32,3 +32,30 @@ services:
     networks:
       default:
         ipv4_address: ${APP_SOLO45_CORE_IP}
+
+  dashboard:  # the full Solo45 dashboard (same program as the Solo45 app's), named Solo45 SV2, reading only this pool
+    image: ghcr.io/race45race/solo45:v0.1.73@sha256:027084d2ab95f4e736c14dd2dae5e19328e66ad19892006085e661438119fb0a
+    user: "1000:1000"
+    restart: on-failure
+    stop_grace_period: 30s
+    depends_on:
+      - pool
+    command: ["sh", "-c", "mkdir -p /data/pool/dash && exec python /app/server.py >> /data/pool/dash/dashboard.log 2>&1"]
+    volumes:
+      - ${APP_DATA_DIR}/data:/data/pool  # the pool's data: its log (read) and the dashboard's own folder dash/
+    environment:
+      SOLO45_APP_NAME: "Solo45 SV2"
+      SOLO45_DASH_DATA: /data/pool/dash
+      SOLO45_POOL_LOG: /data/pool/pool.log
+      SOLO45_API_BASE: http://solo45-core_pool_1:3386
+      SOLO45_API_TOKEN: ${APP_SOLO45_CORE_API_TOKEN}
+      SOLO45_STRATUM_PORT: "3346"  # Stratum V1 miners on this pool
+      SOLO45_OWN_PORTS: "34255"  # its Stratum V2 port counts as this pool too
+      SOLO45_PROXY_HOST: solo45-core_app_proxy_1  # changes and live data only through the Umbrel login
+      BITCOIN_ZMQ_HASHBLOCK: tcp://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_ZMQ_HASHBLOCK_PORT}
+      BITCOIN_RPC_URL: http://${APP_BITCOIN_NODE_IP}:${APP_BITCOIN_RPC_PORT}/
+      BITCOIN_RPC_USER: ${APP_BITCOIN_RPC_USER}
+      BITCOIN_RPC_PASS: ${APP_BITCOIN_RPC_PASS}
+    networks:
+      default:
+        ipv4_address: ${APP_SOLO45_CORE_DASHBOARD_IP}
