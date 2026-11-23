@@ -580,6 +580,15 @@ server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
       and server.pool_name("solo.ckpool.org", 3337) == "solo.ckpool.org")
+_app, _extra = server.APP_NAME, server.EXTRA_OWN_PORTS
+server.APP_NAME, server.EXTRA_OWN_PORTS = "Solo45 SV2", {"34255"}
+check("an app's extra own ports and Stratum V2 pool URLs count as its own pool (Solo45 SV2 app)",
+      server.pool_name("stratum2+tcp://192.168.1.5", "34255/9c5ub6ffW9SohYWckKYdi4s4X2RqJjoxyCggv3rLbRnARi2JNP9") == "Solo45 SV2"
+      and server.pool_name("192.168.1.5", server.STRATUM_PORT) == "Solo45 SV2"
+      and server.pool_name("stratum2+tcp://pool.example.com", "3336/9anr") == "pool.example.com"
+      and server.named_page(b'Solo45 a .Solo45 Solo45x "__OWN_POOL__"') == b'Solo45 SV2 a .Solo45 Solo45x "Solo45 SV2"')
+server.APP_NAME, server.EXTRA_OWN_PORTS = _app, _extra
+check("the Solo45 app's own pages keep their text", server.named_page(b'Solo45 "__OWN_POOL__"') == b'Solo45 "Solo45"')
 check("only 172.16-31 counts as a private pool address",
       server.pool_name("172.16.0.5", server.STRATUM_PORT) == "Solo45"
       and server.pool_name("172.31.1.1", server.STRATUM_PORT) == "Solo45"

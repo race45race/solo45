@@ -534,6 +534,14 @@ body.privacy .sensitive { filter: blur(6px); }
     <div class="ai-foot" id="soloNote"></div>
   </section>
 
+  <section class="card" id="sv2Card" hidden style="margin-bottom:12px">
+      <h2 style="margin:0 0 6px">Stratum V2 <span class="muted">an encrypted mining port; miners check this pool's key</span></h2>
+      <div class="ai-foot" style="margin:0 0 6px">Port <b class="num" id="sv2Port">-</b> · authority key (miners and proxies pin it):</div>
+      <div class="num" id="sv2Key" style="word-break:break-all;font-size:13px">-</div>
+      <div class="ai-foot" style="margin:6px 0 0">Braiins OS pool URL: <span class="num" id="sv2Url" style="word-break:break-all">-</span>.
+        Bitaxes (AxeOS 2.15+): Stratum V2 pool, this Umbrel's IP, the port above and the key. Stratum V1 miners use port <b class="num" id="sv2V1">-</b>.</div>
+    </section>
+
   <section class="card" id="policyCard" style="margin-bottom:12px">
     <h2>Template policy <span class="muted">which transactions go into blocks Solo45 builds; your node's own relay rules still apply first</span></h2>
     <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:10px">
@@ -628,6 +636,7 @@ body.privacy .sensitive { filter: blur(6px); }
 <script>
 const $ = id => document.getElementById(id);
 let state = null, lastTipHash = null, extraShown = "";
+const OWN = "__OWN_POOL__";  // this dashboard's own pool (the server fills in its name)
 
 // ---- tabs: Home, Details, Settings (the address keeps the tab, so a reload or a bookmark opens it)
 const TABS = ["home", "details", "settings"];
@@ -772,9 +781,17 @@ function render(s) {
     $("kwhCur").value = cur();
   }
   renderExtraMiners();
+  const sv2 = (s.solo45 || {}).sv2;  // Stratum V2 (the Solo45 SV2 app)
+  $("sv2Card").hidden = !(sv2 && sv2.port);
+  if (sv2 && sv2.port) {
+    $("sv2Port").textContent = sv2.port;
+    $("sv2Key").textContent = sv2.authority_pubkey || "-";
+    $("sv2Url").textContent = `stratum2+tcp://<your Umbrel's IP>:${sv2.port}/${sv2.authority_pubkey || ""}`;
+    $("sv2V1").textContent = (s.solo45 || {}).stratum_port || "-";
+  }
   // the odds of a block for Solo45: only its own miners count (miners on other pools win for those pools)
-  const multi = pools.length > 1 && T.by_pool.Solo45 != null;
-  const od = multi ? (T.odds_by_pool || {}).Solo45 : T.odds;
+  const multi = pools.length > 1 && T.by_pool[OWN] != null;
+  const od = multi ? (T.odds_by_pool || {})[OWN] : T.odds;
   $("kOddsLabel").textContent = multi ? "Chance today on Solo45" : "Chance today";
   $("kOdds").textContent = od ? fmtPct(od.p_day) : "—";
   $("kOddsYear").innerHTML = od ? `<span>expected time ${fmtDur(od.expected_s)}</span><span>${fmtPct(od.p_year)} over a year</span>` : "";
@@ -789,7 +806,7 @@ function render(s) {
   }
   $("kOnline").innerHTML = `${T.online}<small>/ ${T.count}</small>`;
   const offline = s.miners.filter(m => m.status === "offline").map(m => m.name);
-  const elsewhere = s.miners.filter(m => m.status !== "offline" && m.pool !== "Solo45").map(m => m.name);
+  const elsewhere = s.miners.filter(m => m.status !== "offline" && m.pool !== OWN).map(m => m.name);
   $("kOnlineSub").innerHTML = (offline.length ? `<span>offline: ${esc(offline.join(", "))}</span>` : "")
     + (elsewhere.length ? `<span>on other pools: ${esc(elsewhere.join(", "))}</span>` : "")
     || `<span>all hashing on Solo45</span>`;
@@ -868,7 +885,7 @@ function checkCelebrations(s) {
     if (celebrated.has(key)) continue;
     remember(key);
     if (Date.now() - f.t > 24 * 3600 * 1000) continue;  // too old to celebrate now
-    celebrate(f.msg.replace(/^Solo45: /, ""), reward ? "Reward about " + reward : "", "Found " + new Date(f.t).toLocaleString());
+    celebrate(f.msg.replace(OWN + ": ", ""), reward ? "Reward about " + reward : "", "Found " + new Date(f.t).toLocaleString());
   }
   for (const m of s.miners) {
     if (!m.block_found) continue;
@@ -885,7 +902,7 @@ function renderAlerts(s) {
   const out = [];
   for (const f of s.found || []) out.push(`<div class="alert found">🎉 Block found! <span class="num">${esc(f.msg)}</span></div>`);
   const so = s.solo45 || {};
-  const onSolo = s.miners.some(m => m.pool === "Solo45");
+  const onSolo = s.miners.some(m => m.pool === OWN);
   if (!so.up && (onSolo || so.checked)) out.push(`<div class="alert bad"><span><b>Solo45 pool</b> is not responding <span class="muted">(${esc(so.error || "no reply")})</span></span></div>`);
   else if (so.up && so.proposal && so.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45:</b> your node rejected the pool's test block (${esc(so.proposal.result)}). Found blocks might be invalid, so point your miners at their backup pool until this is fixed.</span></div>`);
   for (const m of s.miners) {
@@ -1043,7 +1060,7 @@ function renderMiners(s) {
 let soloSig = "", soloNames = [];  // soloNames: the miners on Solo45, for "Apply to all"
 let payForceBusy = false;
 let emptyFirstBusy = false;  // while the payout switch saves, live updates don't flip it back
-const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
+const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : `Automatic (1 share / ${(state && state.solo45 && state.solo45.share_seconds) || 5} s)`;
 // ---- tuning report: read-only suggestions from what each Bitaxe already reports (no extra requests)
 const TUNE_LIMITS = {BM1368: {vr: 90, chip: 67}};  // the Hex's power stages run hotter by design
 const tuneLimits = m => TUNE_LIMITS[m.asic] || {vr: 80, chip: 67};
@@ -1672,7 +1689,7 @@ function renderRound(s) {
   for (const [n, v] of Object.entries(today)) ever[n] = Math.max(ever[n] || 0, v || 0);
   const rows = (r.miners || []).slice();
   // miners hashing on Solo45 with no share in this round yet still get a row
-  for (const m of s.miners || []) if (m.pool === "Solo45" && m.status !== "offline" && !rows.some(x => x.name === m.name)) rows.push({name: m.name, best: 0, at: null});
+  for (const m of s.miners || []) if (m.pool === OWN && m.status !== "offline" && !rows.some(x => x.name === m.name)) rows.push({name: m.name, best: 0, at: null});
   $("roundSince").textContent = r.since ? "since Refresh at " + new Date(r.since * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "";
   $("roundRows").innerHTML = rows.length ? rows.map((m, i) => `<tr>
       <td class="first"><div class="mname">${i === 0 && m.best ? '<span class="pill leader">Leader</span> ' : ""}${esc(m.name)}</div></td>

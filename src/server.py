@@ -409,7 +409,7 @@ def solo45_loop():
                 for blk in p.get("blocks") or []:
                     if blk["hash"] not in seen_found:
                         seen_found.add(blk["hash"])
-                        msg = "Solo45: block %d by %s, node said %s" % (
+                        msg = APP_NAME + ": block %d by %s, node said %s" % (
                             blk["height"], blk["worker"], blk["result"] or "accepted")
                         S["found"].append({"t": int(blk["at"] * 1000), "msg": msg})
         except (OSError, ValueError) as e:  # Solo45 really didn't answer (or sent something unreadable)
@@ -546,16 +546,24 @@ def as_num(v):
 
 
 STRATUM_PORT = os.environ.get("SOLO45_STRATUM_PORT") or "3333"  # the port miners use for Solo45 (the app sets it)
+# The name of this dashboard's own pool, shown everywhere ("Solo45", or "Solo45 SV2" inside the Solo45 SV2 app), and
+# any extra ports that also count as it (e.g. its Stratum V2 port).
+APP_NAME = (os.environ.get("SOLO45_APP_NAME") or "Solo45").strip()[:40] or "Solo45"
+EXTRA_OWN_PORTS = {x.strip() for x in (os.environ.get("SOLO45_OWN_PORTS") or "").split(",") if x.strip()}
 
 
 PRIVATE_172 = re.compile(r"172\.(1[6-9]|2[0-9]|3[01])\.")  # only 172.16-31 is private
 
 
 def pool_name(host, port):
-    host = (host or "").replace("stratum+tcp://", "").strip("/")
+    # any scheme (stratum+tcp://, stratum2+tcp://, ...); a port written into the host; a Stratum V2 key after a slash
+    host = re.sub(r"^[a-z0-9+.-]*://", "", (host or "").strip(), flags=re.I).split("/")[0]
+    if ":" in host and not port:
+        host, port = host.rsplit(":", 1)
+    port = re.match(r"\d*", str(port or "")).group(0)
     private = host.startswith(("192.168.", "10.")) or bool(PRIVATE_172.match(host)) or host.endswith(".local")
-    if private and str(port) == STRATUM_PORT:
-        return "Solo45"
+    if private and (port == str(STRATUM_PORT) or port in EXTRA_OWN_PORTS):
+        return APP_NAME
     if private and str(port) in CFG["pools"]:
         return CFG["pools"][str(port)]
     return host or "?"
@@ -1766,7 +1774,7 @@ def best_today():
     for name, d in merged_daily().items():
         typical = d["hashes"] / 2 ** 32
         ratio, tag = luck(d["best"], typical)
-        exact = pools.get(name) == "Solo45"  # off Solo45, only new records since restart show
+        exact = pools.get(name) == APP_NAME  # off Solo45, only new records since restart show
         rows.append({"name": name, "best": d["best"], "at": d["at"], "typical": typical, "ratio": ratio, "tag": tag,
                      "exact": exact})
         if not exact:
@@ -1941,7 +1949,7 @@ def snapshot():
 
         best = max(up + [m for m in miners if m.get("best")],
                    key=lambda m: m.get("best") or 0, default=None)
-        bt, br, solo_ths = best_today(), best_round(), by_pool.get("Solo45", 0)
+        bt, br, solo_ths = best_today(), best_round(), by_pool.get(APP_NAME, 0)
         lead = br["miners"][0] if br["miners"] else {}
         return {
             "now_ms": now_ms(),
@@ -2307,14 +2315,14 @@ def notify_conditions(snap):
                               "Your node has caught up")
     so = snap.get("solo45") or {}
     if so.get("checked") and not so.get("up"):
-        out["pool:down"] = ("node", "Solo45 isn't responding",
+        out["pool:down"] = ("node", APP_NAME + " isn't responding",
                             "The Solo45 pool isn't answering (%s). Your miners will switch to their backup pools." % so.get("error", "no reply"),
-                            "Solo45 is back")
+                            APP_NAME + " is back")
     elif so.get("up") and (so.get("proposal") or {}).get("ok") is False:
         out["pool:check"] = ("node", "Your node rejected Solo45's test block",
                              "Result: %s. A block found now might be invalid; point your miners at their backup pool until it's fixed."
                              % so["proposal"].get("result"),
-                             "Solo45's test blocks pass again")
+                             APP_NAME + "'s test blocks pass again")
     return out
 
 
@@ -2328,7 +2336,7 @@ def notify_events(snap, memo):
     reward = (snap.get("totals") or {}).get("reward_sats")
     for key, msg in found.items():
         if not first and key not in memo["found"]:
-            events.append(("block", "BLOCK FOUND!", msg.replace("Solo45: ", "") + (
+            events.append(("block", "BLOCK FOUND!", msg.replace(APP_NAME + ": ", "") + (
                 ". Reward about %.4f BTC." % (reward / 1e8) if reward else ""), 5, "tada,moneybag"))
     memo["found"] = set(found) | memo.get("found", set())
     so = snap.get("solo45") or {}
@@ -2432,14 +2440,14 @@ def notify_test():
         return 400, {"error": "save a topic first"}
     t = snapshot()["totals"]
     try:
-        ntfy_send("Solo45 test", "Alerts from Solo45 reach this phone. Right now: %d of %d miners hashing, %.0f TH/s."
+        ntfy_send(APP_NAME + " test", "Alerts from " + APP_NAME + " reach this phone. Right now: %d of %d miners hashing, %.0f TH/s."
                   % (t["online"], t["count"], t["ths"]), 3, "wave")
     except urllib.error.HTTPError as e:
         return 502, {"error": "the ntfy server answered %d %s" % (e.code, e.reason)}
     except Exception as e:
         return 502, {"error": "couldn't reach %s: %s" % (c["server"], e)}
     with lock:
-        S["notify_log"].insert(0, {"t": time.time(), "title": "Solo45 test"})
+        S["notify_log"].insert(0, {"t": time.time(), "title": APP_NAME + " test"})
         del S["notify_log"][10:]
     return 200, {"ok": True}
 
@@ -2544,12 +2552,12 @@ def restore_backup(data):
         try:
             code, reply = post_json(SOLO45 + "/api/restore", data["pool"], timeout=30)
         except OSError as e:
-            code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
+            code, reply = 502, {"error": APP_NAME + " is not responding: %s" % e}
         if code == 200:
             done.extend(reply.get("restored", []))
             errors.extend(reply.get("errors", []))
         else:
-            errors.append("Solo45: %s" % reply.get("error", code))
+            errors.append(APP_NAME + ": %s" % reply.get("error", code))
     print("settings restored from a backup: %s%s" % (", ".join(done) or "nothing",
                                                      "; problems: " + "; ".join(errors) if errors else ""), flush=True)
     return 200, {"ok": not errors, "restored": done, "errors": errors}
@@ -2558,10 +2566,19 @@ def restore_backup(data):
 # ------------------------------------------------------------------- server
 
 INDEX = os.path.join(BASE, "index.html")
+
+
+def named_page(raw):
+    """A page with this dashboard's own pool name: __OWN_POOL__ for the page's code, and the shown text
+    (every "Solo45" that isn't part of a longer word or name) when the app has another name."""
+    html = raw.decode("utf-8")
+    if APP_NAME != "Solo45":  # the shown text first, so the name filled in below isn't renamed again
+        html = re.sub(r"(?<![\w.])Solo45(?![\w])", lambda m: APP_NAME, html)
+    return html.replace("__OWN_POOL__", APP_NAME.replace("\\", "").replace('"', "")).encode("utf-8")
 STATIC_DIR = os.path.join(BASE, "static")
 ICONS = ("icon-192.png", "icon-512.png", "apple-touch-icon.png", "logo-mark.png")
 MANIFEST = json.dumps({  # lets phones add the dashboard to the home screen as an app
-    "name": "Solo45", "short_name": "Solo45", "start_url": "/", "display": "standalone",
+    "name": APP_NAME, "short_name": APP_NAME, "start_url": "/", "display": "standalone",
     "background_color": "#0d1014", "theme_color": "#0d1014",
     "icons": [{"src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
               {"src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}],
@@ -2594,10 +2611,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, b'{"error":"only available through the Umbrel login"}', "application/json")
         if path in ("/odds", "/odds.html"):
             with open(os.path.join(BASE, "odds.html"), "rb") as f:
-                return self.send(200, f.read(), "text/html; charset=utf-8")
+                return self.send(200, named_page(f.read()), "text/html; charset=utf-8")
         if path in ("/", "/index.html"):
             with open(INDEX, "rb") as f:
-                self.send(200, f.read(), "text/html; charset=utf-8")
+                self.send(200, named_page(f.read()), "text/html; charset=utf-8")
         elif path == "/api/state":
             self.send(200, json.dumps(snapshot()).encode(), "application/json")
         elif path == "/collapse.js":
@@ -2722,7 +2739,7 @@ class Handler(BaseHTTPRequestHandler):
                        "payout": "solo45_payout_api"}
                 code, reply = post_json(CFG[api[path.rsplit("/", 1)[1]]], data)
             except OSError as e:
-                code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
+                code, reply = 502, {"error": APP_NAME + " is not responding: %s" % e}
             return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/voltfloor":
             code, reply = set_volt_floor(data)
