@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 SV2
-version: "0.0.18"
+version: "0.0.19"
 tagline: A fast solo mining pool with Stratum V2, in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -22,12 +22,12 @@ description: >-
 
   • Stratum V2 (encrypted) on port 34255, next to Stratum V1 on 3346.
 
-  • A status page: hashrate, miners, shares, best shares, block switch time, the node's block check, settings and backup/restore.
+  • A status page: hashrate, miners (with their temperature, fan and watts), shares, best shares, block switch time, the node's block check, settings and backup/restore.
 
 
   This is a test version.
 releaseNotes: >-
-  Solo45 Core is now called Solo45 SV2, a separate app from Solo45 (the Solo45 dashboard no longer reads it). Nothing else changes: same ports, settings, authority key and miners.
+  The miner list now shows each miner's temperature, fan and watts, read every 30 seconds straight from Bitaxes and Braiins OS miners on your network (read only, no logins). Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
