@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 SV2
-version: "0.0.23"
+version: "0.0.24"
 tagline: A fast solo mining pool with Stratum V2, in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  New on the page: Recent blocks (for each of the last 30 new blocks, how fast the work reached your Stratum V1 and V2 miners, when the full template followed and the node's check), and a 24-hour chart for each miner (click its row). Your settings and miners carry over.
+  Canaan Avalon miners (like the Nano 3S) now show their temperature, fan and watts in the miner list too. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
