@@ -561,6 +561,12 @@ def pool_name(host, port):
     return host or "?"
 
 
+def chip_temp(i):
+    """A Bitaxe's chip temperature: the hotter of its sensors (a Hex reports temp and temp2; others temp2 0 or -1)."""
+    vals = [v for v in (i.get("temp"), i.get("temp2")) if isinstance(v, (int, float)) and v > 0]
+    return max(vals) if vals else i.get("temp")
+
+
 def poll_bitaxe(ip):
     i = http_json("http://%s/api/system/info" % ip)
     return {
@@ -571,7 +577,7 @@ def poll_bitaxe(ip):
         "ths": (i.get("hashRate_1m") or i.get("hashRate") or 0) / 1000,
         "ths_long": (i.get("hashRate_10m") or 0) / 1000,
         "expected_ths": (i.get("expectedHashrate") or 0) / 1000,
-        "temp": i.get("temp"),
+        "temp": chip_temp(i),  # a Bitaxe Hex has two chip sensors: the hotter one, like its own page
         "temp2": i.get("vrTemp"),
         "power": i.get("power"),
         "fan": i.get("fanspeed"),
