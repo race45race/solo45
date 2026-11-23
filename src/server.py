@@ -36,11 +36,6 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.environ.get("SOLO45_DASH_DATA") or BASE  # config.json and the saved history
 NODE_DIR = os.environ.get("BITCOIN_DATA_DIR") or HOME + "/umbrel/app-data/bitcoin/data/bitcoin"
 SOLO45 = os.environ.get("SOLO45_API_BASE") or "http://127.0.0.1:3380"
-# Solo45 Core (the Rust pool app), if installed: its read-only status and share feed, and the port its miners use
-CORE = (os.environ.get("SOLO45_CORE_URL") or "http://10.21.22.147:8346").rstrip("/")
-CORE_STRATUM_PORT = os.environ.get("SOLO45_CORE_STRATUM_PORT") or "3346"
-CORE_SV2_PORT = os.environ.get("SOLO45_CORE_SV2_PORT") or "34255"  # Core's Stratum V2 port (e.g. a Bitaxe in SV2 mode)
-OWN_POOLS = ("Solo45", "Solo45 Core")  # both build blocks from your node and pay your address
 CFG_PATH = os.path.join(DATA, "config.json")
 HISTORY_PATH = os.path.join(DATA, "history.json")
 BLOCKS_PATH = os.path.join(DATA, "blocks.json")
@@ -120,7 +115,6 @@ S = {
     "history": [],       # [unix_ts, total_ths, {pool: ths}]
     "found": [],         # block-solve log lines, hopefully one day
     "solo45": {"up": False},  # latest Solo45 pool API reply
-    "core": {"up": False, "seen": False},  # latest Solo45 Core reply (seen: it has answered since the dashboard started)
     "shares": collections.deque(maxlen=200),  # live share feed from Solo45, oldest first
     "daily": {},         # {"date", "miners": {name: {"best", "at", "hashes"}}}: best share today
     "round": {},         # {"since", "miners": {name: {"best", "at"}}}: best share since the last Refresh
@@ -133,7 +127,6 @@ S = {
 }
 ck_pending = {}          # block hash -> ckpool "Block hash changed" time (ms)
 solo_pending = {}        # block hash -> time (ms) Solo45 sent work on top of it
-core_pending = {}        # the same for Solo45 Core
 work_changes = collections.deque(maxlen=50)  # (ms, ip): a Braiins miner received new work
 
 
@@ -297,10 +290,6 @@ def add_block(height, bhash, seen_ms, mined_ms, live):
             t, build_ms = solo_pending.pop(bhash)
             if abs(t - blk["seen_ms"]) < 60000:  # a stale switch time (a pool restart, a missed block) isn't this block's
                 blk["solo45_ms"], blk["solo45_build_ms"] = t - blk["seen_ms"], build_ms
-        if live and bhash in core_pending:
-            t, build_ms = core_pending.pop(bhash)
-            if abs(t - blk["seen_ms"]) < 60000:
-                blk["core_ms"], blk["core_build_ms"] = t - blk["seen_ms"], build_ms
         if live:
             # a Braiins miner may have received the new work just before we read the log line.
             # Keep the window short: a routine Datum refresh ~0.3 s earlier was once miscounted.
@@ -434,81 +423,6 @@ def solo45_loop():
         time.sleep(1)
 
 
-def core_loop():
-    """Poll Solo45 Core, if it's installed: the same status and share feed as Solo45's, read-only. Until it has
-    answered once, look every 30 s (most Umbrels don't have it); after that every second, like Solo45."""
-    seen_found = set()
-    last_seq, last_uptime = 0, 0.0
-    while True:
-        try:
-            d = http_json(CORE + "/api/state", timeout=3)
-            if d.get("engine") != "solo45-core":
-                raise ValueError("not Solo45 Core")
-            if d.get("uptime", 0) < last_uptime:
-                last_seq = 0  # Core restarted: its share numbers start again at 1
-            last_uptime = d.get("uptime", 0)
-            try:
-                new = http_json("%s/api/shares?since=%d" % (CORE, last_seq), timeout=3)["shares"]
-            except urllib.error.HTTPError:
-                new = []  # Core before 0.0.5 has no share feed on this port: its status still shows
-            if new:
-                last_seq = new[-1]["seq"]
-                new = [dict(sh, pool="Solo45 Core") for sh in new]
-                with lock:
-                    S["shares"].extend(new)
-                    today = local_now().strftime("%Y-%m-%d")  # Core sees every share too: exact bests
-                    if S["daily"].get("date") == today:
-                        for sh in new:
-                            rec = S["daily"]["miners"].get(sh["worker"])
-                            if rec is not None and not sh["rejected"] and (sh["share"] or 0) > rec["best"] \
-                                    and sh["t"] >= S["daily"].get("since", 0):
-                                rec["best"], rec["at"] = sh["share"], sh["t"]
-                    note_round_shares(new)
-                broadcast("shares", new)
-            p = d["pool"]
-            sw = p.get("last_switch")
-            with lock:
-                S["core"] = dict(p, up=True, seen=True, version=d.get("version"), workers=d["workers"], checked=time.time())
-                if not S["solo45"].get("up"):  # from your own node as well, if Solo45 isn't answering
-                    if p.get("network_diff"):
-                        S["netdiff"] = p["network_diff"]
-                    if p.get("reward"):
-                        S["reward_sats"] = p["reward"]
-                if sw and sw.get("workers") and p.get("prev"):
-                    t = int(sw["at"] * 1000)
-                    for b in S["blocks"]:
-                        if b["hash"] == p["prev"]:
-                            if b["live"] and b.get("core_ms") is None and abs(t - b["seen_ms"]) < 60000:
-                                b["core_ms"] = t - b["seen_ms"]
-                                b["core_build_ms"] = sw.get("ms")
-                            break
-                    else:
-                        core_pending[p["prev"]] = (t, sw.get("ms"))
-                        while len(core_pending) > 20:
-                            core_pending.pop(next(iter(core_pending)))
-                for blk in p.get("blocks") or []:
-                    if blk["hash"] not in seen_found:
-                        seen_found.add(blk["hash"])
-                        msg = "Solo45 Core: block %d by %s, node said %s" % (
-                            blk["height"], blk["worker"], blk["result"] or "accepted")
-                        S["found"].append({"t": int(blk["at"] * 1000), "msg": msg})
-        except (OSError, ValueError) as e:
-            with lock:
-                if S["core"].get("seen"):  # it was there and stopped answering (not installed = no news)
-                    err = str(e)[:120]
-                    if isinstance(e, urllib.error.HTTPError) and e.code == 403:
-                        err = "Solo45 Core turned the dashboard away (update Solo45 Core)"
-                    S["core"] = dict(S["core"], up=False, error=err)
-        except Exception as e:
-            print("core_loop error: %r" % e, flush=True)
-        time.sleep(1 if S["core"].get("seen") else 30)
-
-
-def pool_workers():
-    """The miners connected to Solo45 and to Solo45 Core (lock held)."""
-    return (S["solo45"].get("workers") or []) + (S["core"].get("workers") or [])
-
-
 # --------------------------------------------------------------------- node
 
 def rpc(method, *params):
@@ -637,21 +551,11 @@ STRATUM_PORT = os.environ.get("SOLO45_STRATUM_PORT") or "3333"  # the port miner
 PRIVATE_172 = re.compile(r"172\.(1[6-9]|2[0-9]|3[01])\.")  # only 172.16-31 is private
 
 
-def split_pool_url(url):
-    """A miner's pool URL -> (host, port), whatever the scheme: stratum+tcp://h:3333, stratum2+tcp://h:34255/<SV2 key>
-    (Braiins OS's Stratum V2 form), or a bare h:port."""
-    rest = re.sub(r"^[A-Za-z0-9+.-]+://", "", (url or "").strip()).split("/", 1)[0]
-    hp = rest.rsplit(":", 1)
-    return hp[0], (hp[1] if len(hp) > 1 else "")
-
-
 def pool_name(host, port):
-    host = re.sub(r"^[A-Za-z0-9+.-]+://", "", host or "").split("/", 1)[0]
+    host = (host or "").replace("stratum+tcp://", "").strip("/")
     private = host.startswith(("192.168.", "10.")) or bool(PRIVATE_172.match(host)) or host.endswith(".local")
     if private and str(port) == STRATUM_PORT:
         return "Solo45"
-    if private and str(port) in (CORE_STRATUM_PORT, CORE_SV2_PORT):
-        return "Solo45 Core"
     if private and str(port) in CFG["pools"]:
         return CFG["pools"][str(port)]
     return host or "?"
@@ -796,7 +700,8 @@ def poll_braiins(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        host, port = split_pool_url(active.get("URL", ""))
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
         user = active.get("User", "")
     fan_pcts = [f.get("Speed") for f in fans if f.get("Speed") is not None]
     met = braiins_metrics(ip)
@@ -866,7 +771,8 @@ def poll_mara(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        host, port = split_pool_url(active.get("URL", ""))
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
         user = active.get("User", "")
     return {
         "kind": "mara",
@@ -917,7 +823,8 @@ def poll_bitmain(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        host, port = split_pool_url(active.get("URL", ""))
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
         user = active.get("User", "")
     return {
         "kind": "bitmain",
@@ -1000,7 +907,8 @@ def poll_avalon(ip):
     lowest_prio = min((p.get("Priority", 0) for p in pools), default=0)
     host, port, user = "", "", ""
     if active:
-        host, port = split_pool_url(active.get("URL", ""))
+        hp = active.get("URL", "").replace("stratum+tcp://", "").rsplit(":", 1)
+        host, port = hp[0], (hp[1] if len(hp) > 1 else "")
         user = active.get("User", "")
     fan_now = avalon_num(f, "FanR")
     avg_temp = avalon_num(f, "TAvg") or (sum(chip_temps) / len(chip_temps) if chip_temps else None)
@@ -1262,7 +1170,7 @@ def poll_one(ip):
 
 def miner_ips():
     with lock:
-        solo_ips = {w["ip"] for w in pool_workers()}
+        solo_ips = {w["ip"] for w in S["solo45"].get("workers") or []}
         now = time.time()
         for ip in [ip for ip, m in S["miners"].items() if ip not in solo_ips and ip not in S["ck_workers"]
                    and ip not in CFG["miners"] and now - (m.get("last_ok") or m.get("first_seen") or now) > STALE_MINER_S]:
@@ -1511,7 +1419,7 @@ def tune_readings(m, now):
     errors a minute and the share of its work Solo45 counted over the last hour."""
     seen = None
     ref = m.get("ths_long") or m.get("ths")
-    for w in pool_workers():
+    for w in S["solo45"].get("workers") or []:
         if w.get("name") == m.get("name") and now - w.get("connected", now) > 1800 and ref:
             seen = round(w.get("hashrate_1h", 0) / 1e12 / ref, 3)
 
@@ -1534,7 +1442,7 @@ def error_span(ip, now):
 
 
 def on_solo45(name):
-    return any(w.get("name") == name for w in pool_workers())
+    return any(w.get("name") == name for w in S["solo45"].get("workers") or [])
 
 
 def track_tuning(ip, m, t):
@@ -1852,7 +1760,7 @@ def best_today():
     for name, d in merged_daily().items():
         typical = d["hashes"] / 2 ** 32
         ratio, tag = luck(d["best"], typical)
-        exact = pools.get(name) in OWN_POOLS  # off Solo45 (or Core), only new records since restart show
+        exact = pools.get(name) == "Solo45"  # off Solo45, only new records since restart show
         rows.append({"name": name, "best": d["best"], "at": d["at"], "typical": typical, "ratio": ratio, "tag": tag,
                      "exact": exact})
         if not exact:
@@ -1911,7 +1819,7 @@ def solo45_hashes_since(t0, ths_now, now):
     for h in S["history"]:
         if len(h) < 3 or not isinstance(h[2], dict):
             continue
-        t, r = h[0], sum(h[2].get(p) or 0 for p in OWN_POOLS)
+        t, r = h[0], h[2].get("Solo45") or 0
         if t > t0:
             total += (r if r_prev is None else r_prev) * (t - t_prev)
             t_prev = t
@@ -1958,7 +1866,7 @@ def miner_extras(m, now):
     """Electricity cost, 24 h uptime, temperature trend and pool-measured hashrate (lock held)."""
     rows = [r for r in S["temps"].get(m.get("name"), []) if r[0] >= now - 86400]
     pool_ths = pool_height = None
-    for w in pool_workers():
+    for w in S["solo45"].get("workers") or []:
         if w.get("name") == m.get("name"):
             pool_height = w.get("last_height")
             if now - w.get("connected", now) > 1800:
@@ -1980,7 +1888,7 @@ def switch_stats():
     """Median new-work time per pool over the recent live blocks (lock held)."""
     live = [b for b in S["blocks"] if b.get("live")]
     out = {"blocks": len(live)}
-    for key in ("solo45_ms", "core_ms", "datum_ms", "gobrrr_ms"):
+    for key in ("solo45_ms", "datum_ms", "gobrrr_ms"):
         vals = sorted(b[key] for b in live if b.get(key) is not None)
         out[key] = vals[len(vals) // 2] if vals else None
     return out
@@ -2027,8 +1935,7 @@ def snapshot():
 
         best = max(up + [m for m in miners if m.get("best")],
                    key=lambda m: m.get("best") or 0, default=None)
-        bt, br = best_today(), best_round()
-        solo_ths = sum(by_pool.get(p, 0) for p in OWN_POOLS)  # Solo45 and Core: both your own node, your address
+        bt, br, solo_ths = best_today(), best_round(), by_pool.get("Solo45", 0)
         lead = br["miners"][0] if br["miners"] else {}
         return {
             "now_ms": now_ms(),
@@ -2036,7 +1943,6 @@ def snapshot():
             "blocks": S["blocks"][:15],
             "gobrrr": S["gobrrr"],
             "solo45": S["solo45"],
-            "core": S["core"],
             "best_today": bt,
             "best_round": br,
             "journey": {"today": journey(bt["fleet"]["best"], bt["fleet"]["at"], bt["fleet"]["name"], solo_ths, now),
@@ -2065,8 +1971,6 @@ def snapshot():
                 "reward_sats": S["reward_sats"],
                 "odds": odds(total),
                 "odds_by_pool": {p: odds(v) for p, v in by_pool.items()},
-                "own_ths": solo_ths,
-                "odds_own": odds(solo_ths),
                 "expected_s": exp_s,
                 "best": {"name": best["name"], "diff": best["best"]} if best and best.get("best") else None,
             },
@@ -2169,7 +2073,7 @@ def manage_miner(data, probe=None):
         save_config({"miners": keep})
         with lock:
             CFG["miners"] = keep
-            solo_ips = {w.get("ip") for w in pool_workers()}
+            solo_ips = {w.get("ip") for w in S["solo45"].get("workers") or []}
             connected = ip in solo_ips or ip in S["ck_workers"]
             if not connected:
                 S["miners"].pop(ip, None)  # off the table now, unless it's connected to the pool
@@ -2405,16 +2309,6 @@ def notify_conditions(snap):
                              "Result: %s. A block found now might be invalid; point your miners at their backup pool until it's fixed."
                              % so["proposal"].get("result"),
                              "Solo45's test blocks pass again")
-    co = snap.get("core") or {}
-    if co.get("seen") and not co.get("up"):
-        out["core:down"] = ("node", "Solo45 Core isn't responding",
-                            "Solo45 Core isn't answering (%s). Its miners will switch to their backup pools." % co.get("error", "no reply"),
-                            "Solo45 Core is back")
-    elif co.get("up") and (co.get("proposal") or {}).get("ok") is False:
-        out["core:check"] = ("node", "Your node rejected Solo45 Core's test block",
-                             "Result: %s. A block found on Core now might be invalid; point its miners at Solo45 until it's fixed."
-                             % co["proposal"].get("result"),
-                             "Solo45 Core's test blocks pass again")
     return out
 
 
@@ -2824,21 +2718,6 @@ class Handler(BaseHTTPRequestHandler):
             except OSError as e:
                 code, reply = 502, {"error": "Solo45 is not responding: %s" % e}
             return self.send(code, json.dumps(reply).encode(), "application/json")
-        if path == "/api/core/worker" and CORE:
-            # per-miner difficulty for Solo45 Core (it accepts it only from this container; pool settings, the payout
-            # address, policy and restores stay on Core's own page). Solo45's API token is not sent along.
-            req = urllib.request.Request(CORE + "/api/worker", json.dumps(data).encode(), {"Content-Type": "application/json"})
-            try:
-                with urllib.request.urlopen(req, timeout=5) as r:
-                    code, reply = r.status, json.load(r)
-            except urllib.error.HTTPError as e:
-                try:
-                    code, reply = e.code, json.load(e)
-                except ValueError:
-                    code, reply = e.code, {"error": "HTTP %d" % e.code}
-            except (OSError, ValueError) as e:
-                code, reply = 502, {"error": "Solo45 Core is not responding: %s" % e}
-            return self.send(code, json.dumps(reply).encode(), "application/json")
         if path == "/api/dash/voltfloor":
             code, reply = set_volt_floor(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
@@ -2905,7 +2784,7 @@ def main():
     else:
         feed = (tip_poll_loop, ())
     loops = [feed, (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
-             (solo45_loop, ()), (core_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ())]
+             (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ())]
     if CFG["ckpool_log"] and os.path.exists(CFG["ckpool_log"]):  # a ckpool-based pool (like Go Brrr) on this Umbrel
         print("reading the ckpool log for Go Brrr timings...", flush=True)
         try:

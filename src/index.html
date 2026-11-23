@@ -16,7 +16,7 @@
 :root {
   --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f0f2f5; --line: #e2e5ea;
   --text: #16191d; --muted: #646b75; --faint: #9aa1ab;
-  --accent: #e8850c; --datum: #2f6fdb; --gobrrr: #e8850c; --solo45: #0b8fa8; --core: #1a9e5c; --other: #8a63d2;
+  --accent: #e8850c; --datum: #2f6fdb; --gobrrr: #e8850c; --solo45: #0b8fa8; --other: #8a63d2;
   --ok: #1f9d55; --warn: #c27c0e; --bad: #d64545;
   --ok-bg: #e6f5ec; --warn-bg: #fdf3e1; --bad-bg: #fbe9e9;
   --shadow: 0 1px 2px rgba(20,24,30,.06), 0 1px 1px rgba(20,24,30,.04);
@@ -29,7 +29,7 @@
   :root:not([data-theme="light"]) {
     --bg: #0d1014; --panel: #151a20; --panel-2: #1b2129; --line: #252c35;
     --text: #e7ebf0; --muted: #98a2ae; --faint: #5f6873;
-    --accent: #f7931a; --datum: #5b9bff; --gobrrr: #f7931a; --solo45: #3cc3dc; --core: #4fd18b; --other: #a88bf0;
+    --accent: #f7931a; --datum: #5b9bff; --gobrrr: #f7931a; --solo45: #3cc3dc; --other: #a88bf0;
     --ok: #3fbf74; --warn: #e3a33a; --bad: #f06a6a;
     --ok-bg: #12301f; --warn-bg: #33270f; --bad-bg: #3a1717;
     --shadow: none;
@@ -38,7 +38,7 @@
 :root[data-theme="dark"] {
   --bg: #0d1014; --panel: #151a20; --panel-2: #1b2129; --line: #252c35;
   --text: #e7ebf0; --muted: #98a2ae; --faint: #5f6873;
-  --accent: #f7931a; --datum: #5b9bff; --gobrrr: #f7931a; --solo45: #3cc3dc; --core: #4fd18b; --other: #a88bf0;
+  --accent: #f7931a; --datum: #5b9bff; --gobrrr: #f7931a; --solo45: #3cc3dc; --other: #a88bf0;
   --ok: #3fbf74; --warn: #e3a33a; --bad: #f06a6a;
   --ok-bg: #12301f; --warn-bg: #33270f; --bad-bg: #3a1717;
   --shadow: none;
@@ -458,7 +458,7 @@ body.privacy .sensitive { filter: blur(6px); }
     <div class="feed-head" id="switchStats"></div>
     <div class="tablewrap">
       <table>
-        <thead><tr><th class="first">Height</th><th>Seen</th><th class="r">Gap</th><th class="r">Solo45 new work</th><th class="r" id="thCore">Core new work</th><th class="r" id="thDatum">Datum new work</th><th class="r" id="thGobrrr">Go Brrr new work</th><th class="r">Miners on new block</th></tr></thead>
+        <thead><tr><th class="first">Height</th><th>Seen</th><th class="r">Gap</th><th class="r">Solo45 new work</th><th class="r" id="thDatum">Datum new work</th><th class="r" id="thGobrrr">Go Brrr new work</th><th class="r">Miners on new block</th></tr></thead>
         <tbody id="blocks"></tbody>
       </table>
     </div>
@@ -735,10 +735,8 @@ function fmtPct(p) {
   return "1 in " + Math.round(1 / p).toLocaleString();
 }
 const clock = ms => new Date(ms).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit", second: "2-digit"});
-const OWN = ["Solo45", "Solo45 Core"];  // your own pools: your node, your address
 function poolColor(name) {
   const cs = getComputedStyle(document.documentElement);
-  if (/core/i.test(name)) return cs.getPropertyValue("--core").trim();
   if (/datum/i.test(name)) return cs.getPropertyValue("--datum").trim();
   if (/brrr/i.test(name)) return cs.getPropertyValue("--gobrrr").trim();
   if (/solo45/i.test(name)) return cs.getPropertyValue("--solo45").trim();
@@ -774,12 +772,10 @@ function render(s) {
     $("kwhCur").value = cur();
   }
   renderExtraMiners();
-  // the odds of a block for you: miners on Solo45 and Solo45 Core count (both your node, your address); miners on
-  // other pools win for those pools
-  const own = OWN.filter(p => T.by_pool[p] != null);
-  const multi = pools.length > own.length && own.length > 0;
-  const od = own.length && (multi || own.length > 1) ? T.odds_own : T.odds;
-  $("kOddsLabel").textContent = multi ? "Chance today on " + own.join(" + ") : "Chance today";
+  // the odds of a block for Solo45: only its own miners count (miners on other pools win for those pools)
+  const multi = pools.length > 1 && T.by_pool.Solo45 != null;
+  const od = multi ? (T.odds_by_pool || {}).Solo45 : T.odds;
+  $("kOddsLabel").textContent = multi ? "Chance today on Solo45" : "Chance today";
   $("kOdds").textContent = od ? fmtPct(od.p_day) : "—";
   $("kOddsYear").innerHTML = od ? `<span>expected time ${fmtDur(od.expected_s)}</span><span>${fmtPct(od.p_year)} over a year</span>` : "";
   const bf = s.best_today && s.best_today.fleet;
@@ -793,18 +789,15 @@ function render(s) {
   }
   $("kOnline").innerHTML = `${T.online}<small>/ ${T.count}</small>`;
   const offline = s.miners.filter(m => m.status === "offline").map(m => m.name);
-  const elsewhere = s.miners.filter(m => m.status !== "offline" && !OWN.includes(m.pool)).map(m => m.name);
-  const onCore = s.miners.filter(m => m.status !== "offline" && m.pool === "Solo45 Core").map(m => m.name);
+  const elsewhere = s.miners.filter(m => m.status !== "offline" && m.pool !== "Solo45").map(m => m.name);
   $("kOnlineSub").innerHTML = (offline.length ? `<span>offline: ${esc(offline.join(", "))}</span>` : "")
-    + (onCore.length ? `<span>on Solo45 Core: ${esc(onCore.join(", "))}</span>` : "")
     + (elsewhere.length ? `<span>on other pools: ${esc(elsewhere.join(", "))}</span>` : "")
     || `<span>all hashing on Solo45</span>`;
-  // each pool keeps every block it found (and what the node said) across restarts
-  const fb = ((s.solo45 || {}).blocks || []).concat(((s.core || {}).blocks || []).map(b => Object.assign({core: true}, b)))
-    .sort((a, b) => a.at - b.at).reverse();
+  // the pool keeps every block it found (and what the node said) across restarts
+  const fb = ((s.solo45 || {}).blocks || []).slice().reverse();
   $("foundCount").textContent = fb.length;
   $("foundNote").innerHTML = fb.length
-    ? fb.slice(0, 5).map(b => `Block <b class="num">${b.height.toLocaleString()}</b> by ${esc(b.worker)}${b.core ? " on Solo45 Core" : ""}, ${new Date(b.at * 1000).toLocaleDateString([], {year: "numeric", month: "short", day: "numeric"})}${b.result ? ` <span class="hot">(node said ${esc(b.result)})</span>` : ""}`).join("<br>")
+    ? fb.slice(0, 5).map(b => `Block <b class="num">${b.height.toLocaleString()}</b> by ${esc(b.worker)}, ${new Date(b.at * 1000).toLocaleDateString([], {year: "numeric", month: "short", day: "numeric"})}${b.result ? ` <span class="hot">(node said ${esc(b.result)})</span>` : ""}`).join("<br>")
     : "When one of your miners finds a block, it shows here. Keep hashing.";
 
   renderAlerts(s);
@@ -895,9 +888,6 @@ function renderAlerts(s) {
   const onSolo = s.miners.some(m => m.pool === "Solo45");
   if (!so.up && (onSolo || so.checked)) out.push(`<div class="alert bad"><span><b>Solo45 pool</b> is not responding <span class="muted">(${esc(so.error || "no reply")})</span></span></div>`);
   else if (so.up && so.proposal && so.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45:</b> your node rejected the pool's test block (${esc(so.proposal.result)}). Found blocks might be invalid, so point your miners at their backup pool until this is fixed.</span></div>`);
-  const co = s.core || {};
-  if (co.seen && !co.up) out.push(`<div class="alert bad"><span><b>Solo45 Core</b> is not responding <span class="muted">(${esc(co.error || "no reply")})</span>; its miners are on their backup pool</span></div>`);
-  else if (co.up && co.proposal && co.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45 Core:</b> your node rejected its test block (${esc(co.proposal.result)}). Point its miners at Solo45 until this is fixed.</span></div>`);
   for (const m of s.miners) {
     if (m.block_found) out.push(`<div class="alert found">🎉 ${esc(m.name)} reports a found block!</div>`);
     if (m.status === "offline") out.push(`<div class="alert bad"><span><b>${esc(m.name)}</b> is not responding <span class="muted">(${esc(m.ip)})</span></span></div>`);
@@ -916,7 +906,6 @@ function renderBlock(s) {
   const times = [];
   if (tip.gobrrr_ms != null) times.push(tip.gobrrr_ms);
   if (tip.solo45_ms != null) times.push(tip.solo45_ms);
-  if (tip.core_ms != null) times.push(tip.core_ms);
   if (tip.datum_ms != null) times.push(tip.datum_ms);
   for (const m of bitaxes) if (tip.miners[m.name] != null) times.push(tip.miners[m.name]);
   const max = Math.max(1000, ...times);
@@ -928,8 +917,6 @@ function renderBlock(s) {
   rows.push(`<div class="tl-row"><span class="name">Your node</span>${bar(0, "var(--text)")}<span class="t num">0 ms</span></div>`);
   if ((s.solo45 || {}).up || tip.solo45_ms != null)
     rows.push(`<div class="tl-row" title="${tip.solo45_ms < 0 ? "Sent before the dashboard read the node's log line. " : ""}${tip.solo45_build_ms != null ? `Solo45 built and sent the new work ${tip.solo45_build_ms} ms after it spotted the block.` : ""}"><span class="name">Solo45 new work</span>${bar(tip.solo45_ms, poolColor("Solo45"))}<span class="t num">${fmtMs(tip.solo45_ms)}${tip.solo45_build_ms != null ? `<span class="faint hide-sm"> · built ${tip.solo45_build_ms} ms</span>` : ""}</span></div>`);
-  if ((s.core || {}).up || tip.core_ms != null)
-    rows.push(`<div class="tl-row" title="${tip.core_build_ms != null ? `Solo45 Core built and sent the new work ${tip.core_build_ms} ms after it spotted the block.` : ""}"><span class="name">Core new work</span>${bar(tip.core_ms, poolColor("Solo45 Core"))}<span class="t num">${fmtMs(tip.core_ms)}${tip.core_build_ms != null ? `<span class="faint hide-sm"> · built ${tip.core_build_ms} ms</span>` : ""}</span></div>`);
   if (tip.live && hasDatum) {
     const waitingD = tip.datum_ms == null && (s.now_ms - tip.seen_ms) < 20000;
     rows.push(`<div class="tl-row" title="When the first miner on Datum received the new block's work"><span class="name">Datum Gateway</span>${bar(tip.datum_ms, poolColor("Datum"))}<span class="t num ${tip.datum_ms == null ? "faint" : ""}">${tip.datum_ms != null ? fmtMs(tip.datum_ms) : waitingD ? "…" : "—"}</span></div>`);
@@ -1013,12 +1000,10 @@ function renderMiners(s) {
       const ref = m.ths_long || m.ths;  // the Hexes' older firmware has no 10-minute average
       const seen = m.pool_ths != null && ref ? m.pool_ths / ref : null;
       const open = openMiners.has(m.name);
-      // a miner on Solo45 Core: its protocol as Core reports it (V1, SV2 extended / standard)
-      const proto = m.pool === "Solo45 Core" ? (((s.core || {}).workers || []).find(w => w.name === m.name) || {}).protocol : null;
       const powerTitle = m.power_source === "psu" ? `Measured by the power supply${m.power_estimate ? ` (Braiins estimates ${Math.round(m.power_estimate)} W)` : ""}${m.psu_v ? `, ${m.psu_v.toFixed(2)} V` : ""}`
         : m.power_source === "estimate" ? "Braiins OS estimate (this power supply doesn't report its watts)" : "";
       rows.push(`<tr class="mrow${open ? " open" : ""}" data-miner="${esc(m.name)}" tabindex="0" aria-expanded="${open}" style="${off ? "opacity:.55" : ""}">
-        <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${proto && proto.startsWith("SV2") ? ' · <span title="Encrypted Stratum V2 to Solo45 Core">SV2</span>' : ""}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}</div></td>
+        <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}</div></td>
         <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
@@ -1027,7 +1012,7 @@ function renderMiners(s) {
       </tr>`);
       const d = (k, v) => `<div><span class="k">${k}</span><span class="v">${v}</span></div>`;
       rows.push(`<tr class="mdetail" data-for="${esc(m.name)}"${open ? "" : " hidden"}><td colspan="6"><div class="dgrid">
-        ${d("Pool", esc(m.pool) + (proto ? ' <span class="muted">· ' + esc(proto === "V1" ? "Stratum V1" : proto.replace("SV2", "Stratum V2")) + '</span>' : "") + (m.on_fallback ? ' <span class="hot">(backup)</span>' : ""))}
+        ${d("Pool", esc(m.pool) + (m.on_fallback ? ' <span class="hot">(backup)</span>' : ""))}
         ${d("Efficiency", off ? "—" : jth + " J/TH")}
         ${d("Cost a day", m.cost_day ? esc(cur()) + m.cost_day.toFixed(2) : "—")}
         ${d("Fan", m.fan != null ? Math.round(m.fan) + "%" : "—")}
@@ -1058,8 +1043,7 @@ function renderMiners(s) {
 let soloSig = "", soloNames = [];  // soloNames: the miners on Solo45, for "Apply to all"
 let payForceBusy = false;
 let emptyFirstBusy = false;  // while the payout switch saves, live updates don't flip it back
-// Core aims for 1 share / 10 s by default, Solo45 for 1 share / 5 s
-const settingText = (o, core) => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : `Automatic (1 share / ${core ? 10 : 5} s)`;
+const settingText = o => o && o.diff ? `Fixed difficulty ${fmtDiff(o.diff)}` : o && o.share_seconds ? `Aim for 1 share / ${o.share_seconds} s` : "Automatic (1 share / 5 s)";
 // ---- tuning report: read-only suggestions from what each Bitaxe already reports (no extra requests)
 const TUNE_LIMITS = {BM1368: {vr: 90, chip: 67}};  // the Hex's power stages run hotter by design
 const tuneLimits = m => TUNE_LIMITS[m.asic] || {vr: 80, chip: 67};
@@ -1243,24 +1227,22 @@ function renderSolo(s) {
     $("refreshS").value = so.template_refresh_s;
     $("refreshNote").textContent = `now ${so.template_refresh_s} s`;
   }
-  // Solo45 Core's miners too (when it's installed): their settings go to Core, through this dashboard
-  const coreWs = s.core && s.core.up ? (s.core.workers || []).map(w => Object.assign({}, w, {core: true})) : [];
-  const ws = (so.workers || []).concat(coreWs).sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}) || (a.core ? 1 : 0) - (b.core ? 1 : 0));
-  soloNames = ws.map(w => ({name: w.name, core: !!w.core}));
-  const sig = ws.map(w => (w.core ? "c:" : "") + w.name + JSON.stringify(w.override || {})).join("|");
+  const ws = (so.workers || []).slice().sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+  soloNames = ws.map(w => w.name);
+  const sig = ws.map(w => w.name + JSON.stringify(w.override || {})).join("|");
   const editing = document.activeElement && $("soloWorkers").contains(document.activeElement);
   if (sig !== soloSig && !editing) {
     soloSig = sig;
     $("soloWorkers").innerHTML = ws.length ? ws.map((w, i) => `<tr>
-      <td class="first"><div class="mname">${esc(w.name)}${w.core ? ' <span class="pill" title="This miner is on Solo45 Core; its setting is saved there">Core</span>' : ""}</div><div class="msub">${esc(w.ip)}</div></td>
-      <td>${esc(settingText(w.override, w.core))}</td>
+      <td class="first"><div class="mname">${esc(w.name)}</div><div class="msub">${esc(w.ip)}</div></td>
+      <td>${esc(settingText(w.override))}</td>
       <td class="r num" id="sd${i}"></td><td class="r num" id="st${i}"></td><td class="r num" id="ss${i}"></td>
-      <td><div class="setting-ctl" data-name="${esc(w.name)}" data-core="${w.core ? 1 : ""}">
+      <td><div class="setting-ctl" data-name="${esc(w.name)}">
         <select><option value="auto">Automatic</option><option value="share_seconds">Seconds per share</option><option value="diff">Fixed difficulty</option></select>
         <input type="number" min="0" step="any" placeholder="value" style="display:none">
         <button class="btn small" type="button">Save</button>
       </div></td></tr>`).join("")
-      : `<tr><td class="first faint" colspan="6">No miners on Solo45 or Solo45 Core right now.</td></tr>`;
+      : `<tr><td class="first faint" colspan="6">No miners on Solo45 right now.</td></tr>`;
   }
   ws.forEach((w, i) => {
     const el = id => $(id + i);
@@ -1281,26 +1263,26 @@ $("soloAll").querySelector("button").addEventListener("click", async e => {
   const mode = $("soloAll").querySelector("select").value, val = parseFloat($("soloAll").querySelector("input").value);
   const note = $("soloAllNote"), names = soloNames.slice();
   if (mode !== "auto" && !(val > 0)) { note.textContent = "Enter a number first."; return; }
-  if (!names.length) { note.textContent = "No miners on Solo45 or Solo45 Core right now."; return; }
+  if (!names.length) { note.textContent = "No miners on Solo45 right now."; return; }
   const body = mode === "auto" ? {} : {[mode]: val};
-  if (!confirm(`Set all ${names.length} miners on Solo45${names.some(n => n.core) ? " and Solo45 Core" : ""} to “${settingText(body)}”?`)) return;
+  if (!confirm(`Set all ${names.length} miners on Solo45 to “${settingText(body)}”?`)) return;
   e.target.disabled = true;
   const failed = [];
-  for (const [i, m] of names.entries()) {
+  for (const [i, name] of names.entries()) {
     note.textContent = `Saving ${i + 1} of ${names.length}…`;
-    if (!await saveSetting(m.name, body, $("soloNote"), m.core)) failed.push(m.name + (m.core ? " (Core)" : ""));
+    if (!await saveSetting(name, body, $("soloNote"))) failed.push(name);
   }
   e.target.disabled = false;
   note.textContent = failed.length ? `Saved ${names.length - failed.length} of ${names.length}; not saved: ${failed.join(", ")}`
     : `All ${names.length} miners are now on “${settingText(body)}”.`;
 });
 
-async function saveSetting(name, body, note, core) {
+async function saveSetting(name, body, note) {
   note.textContent = "Saving…";
   try {
-    const r = await fetch(core ? "/api/core/worker" : "/api/solo45/worker", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({name}, body))});
+    const r = await fetch("/api/solo45/worker", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(Object.assign({name}, body))});
     const j = await r.json();
-    note.textContent = r.ok ? `Saved: ${name}${core ? " (Solo45 Core)" : ""} is now on “${settingText(j.override, core)}”.` : `Not saved: ${j.error || r.status}`;
+    note.textContent = r.ok ? `Saved: ${name} is now on “${settingText(j.override)}”.` : `Not saved: ${j.error || r.status}`;
     return r.ok;
   } catch (e) {
     note.textContent = "Not saved: " + e.message;
@@ -1637,7 +1619,7 @@ $("soloWorkers").addEventListener("click", async e => {
   const mode = ctl.querySelector("select").value, val = parseFloat(ctl.querySelector("input").value);
   if (mode !== "auto" && !(val > 0)) { $("soloNote").textContent = "Enter a number first."; return; }
   e.target.disabled = true;
-  await saveSetting(ctl.dataset.name, mode === "auto" ? {} : {[mode]: val}, $("soloNote"), !!ctl.dataset.core);
+  await saveSetting(ctl.dataset.name, mode === "auto" ? {} : {[mode]: val}, $("soloNote"));
   e.target.disabled = false;
 });
 
@@ -1690,7 +1672,7 @@ function renderRound(s) {
   for (const [n, v] of Object.entries(today)) ever[n] = Math.max(ever[n] || 0, v || 0);
   const rows = (r.miners || []).slice();
   // miners hashing on Solo45 with no share in this round yet still get a row
-  for (const m of s.miners || []) if (OWN.includes(m.pool) && m.status !== "offline" && !rows.some(x => x.name === m.name)) rows.push({name: m.name, best: 0, at: null});
+  for (const m of s.miners || []) if (m.pool === "Solo45" && m.status !== "offline" && !rows.some(x => x.name === m.name)) rows.push({name: m.name, best: 0, at: null});
   $("roundSince").textContent = r.since ? "since Refresh at " + new Date(r.since * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "";
   $("roundRows").innerHTML = rows.length ? rows.map((m, i) => `<tr>
       <td class="first"><div class="mname">${i === 0 && m.best ? '<span class="pill leader">Leader</span> ' : ""}${esc(m.name)}</div></td>
@@ -1830,14 +1812,12 @@ function renderBlocks(s) {
   if (sw && sw.blocks) {
     const part = (name, v) => v == null ? "" : `<span>${name} <b class="num">${fmtMs(v)}</b></span>`;
     $("switchStats").innerHTML = `<span>Median new-work time over the last ${sw.blocks} timed blocks:</span>`
-      + part("Solo45", sw.solo45_ms) + part("Solo45 Core", sw.core_ms) + part("Datum", sw.datum_ms) + part("Go Brrr", sw.gobrrr_ms);
+      + part("Solo45", sw.solo45_ms) + part("Datum", sw.datum_ms) + part("Go Brrr", sw.gobrrr_ms);
   }
   const rows = [];
   const bl = s.blocks;
   // columns for other pools on this Umbrel only show while some recent block has their timing
   const hasDatum = bl.some(b => b.datum_ms != null), hasGobrrr = bl.some(b => b.gobrrr_ms != null);
-  const hasCore = bl.some(b => b.core_ms != null);
-  $("thCore").style.display = hasCore ? "" : "none";
   $("thDatum").style.display = hasDatum ? "" : "none";
   $("thGobrrr").style.display = hasGobrrr ? "" : "none";
   for (let i = 0; i < bl.length; i++) {
@@ -1853,7 +1833,6 @@ function renderBlocks(s) {
       <td class="num">${clock(b.seen_ms)}</td>
       <td class="r num">${gap != null ? fmtDur(gap) : "—"}</td>
       <td class="r num">${b.solo45_ms != null ? fmtMs(b.solo45_ms) : "—"}</td>
-      ${hasCore ? `<td class="r num">${b.core_ms != null ? fmtMs(b.core_ms) : "—"}</td>` : ""}
       ${hasDatum ? `<td class="r num">${b.datum_ms != null ? fmtMs(b.datum_ms) : "—"}</td>` : ""}
       ${hasGobrrr ? `<td class="r num">${ck}</td>` : ""}
       <td class="r num">${b.live ? (n ? `${n} · slowest ${fmtMs(slowest)}` : "…") : '<span class="faint">before start</span>'}</td>

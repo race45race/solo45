@@ -580,11 +580,6 @@ server.STRATUM_PORT = "3337"  # the official Umbrel app's port
 check("miners on the app's stratum port count as Solo45", server.pool_name("192.168.1.5", 3337) == "Solo45"
       and server.pool_name("stratum+tcp://192.168.1.5", "3333") == "Solo45" and server.pool_name("10.0.0.2", 23334) == "Datum"
       and server.pool_name("solo.ckpool.org", 3337) == "solo.ckpool.org")
-check("miners on Solo45 Core's port count as Solo45 Core, and both are your own pools",
-      server.pool_name("192.168.1.5", server.CORE_STRATUM_PORT) == "Solo45 Core"
-      and server.pool_name("192.168.1.5", 34255) == "Solo45 Core"  # Core's Stratum V2 port
-      and server.pool_name("solo.example.com", server.CORE_STRATUM_PORT) == "solo.example.com"
-      and set(server.OWN_POOLS) == {"Solo45", "Solo45 Core"})
 check("only 172.16-31 counts as a private pool address",
       server.pool_name("172.16.0.5", server.STRATUM_PORT) == "Solo45"
       and server.pool_name("172.31.1.1", server.STRATUM_PORT) == "Solo45"
@@ -1212,14 +1207,6 @@ check("junk usernames: no lookup for worker names, address cache capped, authori
       and _sp.calls == 1 + P.SPK_CACHE_MAX + 50 and _jlim and not P.address_plausible("x" * 24)
       and not P.address_plausible("bc1q-" + "a" * 30) and P.address_plausible("bc1p" + "a" * 58),
       "(calls %d, cache %d, limit %s)" % (_sp.calls, len(_sp.spk_cache), _jlim))
-_urls = {u: server.split_pool_url(u) for u in ("stratum2+tcp://192.168.4.80:34255/9c5ub6ffW9SohYWckKYdi4s4X2RqJjoxyCggv3rLbRnARi2JNP9",
-                                                "stratum+tcp://192.168.4.80:3333", "192.168.4.80:3346", "us-east.harlolabs.com:8888", "")}
-check("pool URLs: Braiins OS's Stratum V2 form (stratum2+tcp://host:34255/<key>) counts as Solo45 Core",
-      server.pool_name(*_urls["stratum2+tcp://192.168.4.80:34255/9c5ub6ffW9SohYWckKYdi4s4X2RqJjoxyCggv3rLbRnARi2JNP9"]) == "Solo45 Core"
-      and server.pool_name(*_urls["stratum+tcp://192.168.4.80:3333"]) == "Solo45"
-      and server.pool_name(*_urls["192.168.4.80:3346"]) == "Solo45 Core"
-      and server.pool_name(*_urls["us-east.harlolabs.com:8888"]) == "us-east.harlolabs.com"
-      and _urls[""] == ("", "") and server.pool_name("stratum+tcp://192.168.4.80", 3333) == "Solo45", _urls)
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)
