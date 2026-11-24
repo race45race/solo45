@@ -1833,7 +1833,7 @@ def solo45_hashes_since(t0, ths_now, now):
     for h in S["history"]:
         if len(h) < 3 or not isinstance(h[2], dict):
             continue
-        t, r = h[0], h[2].get("Solo45") or 0
+        t, r = h[0], h[2].get(APP_NAME) or 0
         if t > t0:
             total += (r if r_prev is None else r_prev) * (t - t_prev)
             t_prev = t
