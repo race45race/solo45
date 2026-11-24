@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 SV2
-version: "0.0.25"
+version: "0.0.26"
 tagline: A fast solo mining pool with Stratum V2, in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  Solo45 SV2 now has the full Solo45 dashboard of its own (Home, Details and Settings: fleet, odds, best shares and journeys, tuning report, Avalon controls, block timing, luck, network and node, alerts, backup), reading only this pool. The pool itself is unchanged; your settings and miners carry over. You can still install Solo45 SV2 on its own.
+  Dashboard fix: the journeys to beat the best share (today, this round, this month) now count this pool's work; they showed <0.1% before. The pool itself is unchanged.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
