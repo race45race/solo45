@@ -144,6 +144,7 @@ td.first, th.first { padding-left: 0; }
 .pill.ok { background: var(--ok-bg); color: var(--ok); }
 .pill.warn { background: var(--warn-bg); color: var(--warn); }
 .pill.offline { background: var(--bad-bg); color: var(--bad); }
+.pill.resting { background: var(--line, rgba(128,128,128,.18)); color: var(--muted, #8b8f98); }
 .pool-tag { font-size: 12px; }
 .hbar { width: 70px; height: 5px; background: var(--panel-2); border-radius: 3px; margin-top: 4px; margin-left: auto; overflow: hidden; }
 .hbar span { display: block; height: 100%; border-radius: 3px; }
@@ -538,8 +539,10 @@ body.privacy .sensitive { filter: blur(6px); }
       <h2 style="margin:0 0 6px">Stratum V2 <span class="muted">an encrypted mining port; miners check this pool's key</span></h2>
       <div class="ai-foot" style="margin:0 0 6px">Port <b class="num" id="sv2Port">-</b> · authority key (miners and proxies pin it):</div>
       <div class="num" id="sv2Key" style="word-break:break-all;font-size:13px">-</div>
-      <div class="ai-foot" style="margin:6px 0 0">Braiins OS pool URL: <span class="num" id="sv2Url" style="word-break:break-all">-</span>.
-        Bitaxes (AxeOS 2.15+): Stratum V2 pool, this Umbrel's IP, the port above and the key. Stratum V1 miners use port <b class="num" id="sv2V1">-</b>.</div>
+      <div class="ai-foot" style="margin:6px 0 0">Braiins OS pool URL:</div>
+      <div class="num" id="sv2Url" style="word-break:break-all;font-size:13px">-</div>
+      <div class="ai-foot" style="margin:6px 0 0">Bitaxes (AxeOS 2.15+): Stratum V2 pool, this Umbrel's IP, the port above and the key.
+        Stratum V1 miners use port <b class="num" id="sv2V1">-</b>.</div>
     </section>
 
   <section class="card" id="policyCard" style="margin-bottom:12px">
@@ -748,9 +751,14 @@ function poolColor(name) {
   const cs = getComputedStyle(document.documentElement);
   if (/datum/i.test(name)) return cs.getPropertyValue("--datum").trim();
   if (/brrr/i.test(name)) return cs.getPropertyValue("--gobrrr").trim();
-  if (/solo45/i.test(name)) return cs.getPropertyValue("--solo45").trim();
-  return cs.getPropertyValue("--other").trim();
+  if (name === OWN || (/solo45/i.test(name) && !/sv2/i.test(name) === !/sv2/i.test(OWN))) return cs.getPropertyValue("--solo45").trim();
+  if (/solo45/i.test(name)) return "#3fbf74";  // the other Solo45 app
+  if (!poolColors.has(name)) poolColors.set(name, OTHER_COLORS[poolColors.size % OTHER_COLORS.length]);
+  return poolColors.get(name);
 }
+// other pools get the next free colour, in the order they're first drawn (no two share one until there are 10)
+const OTHER_COLORS = ["#a88bf0", "#e3c13a", "#f06a6a", "#f28ac0", "#7fb0ff", "#c9a27a", "#9be15d", "#ff9f5a", "#5fd4c4", "#d0d4da"];
+const poolColors = new Map();
 
 // ---- rendering
 function render(s) {
@@ -786,7 +794,8 @@ function render(s) {
   if (sv2 && sv2.port) {
     $("sv2Port").textContent = sv2.port;
     $("sv2Key").textContent = sv2.authority_pubkey || "-";
-    $("sv2Url").textContent = `stratum2+tcp://<your Umbrel's IP>:${sv2.port}/${sv2.authority_pubkey || ""}`;
+    const host = /^\d{1,3}(\.\d{1,3}){3}$/.test(location.hostname) && location.hostname !== "127.0.0.1" ? location.hostname : "<your Umbrel's IP>";
+    $("sv2Url").textContent = `stratum2+tcp://${host}:${sv2.port}/${sv2.authority_pubkey || ""}`;
     $("sv2V1").textContent = (s.solo45 || {}).stratum_port || "-";
   }
   // the odds of a block for Solo45: only its own miners count (miners on other pools win for those pools)
@@ -805,10 +814,12 @@ function render(s) {
     $("kBestSub").innerHTML = T.best ? `<span>all-time ${fmtDiff(T.best.diff)} (${esc(T.best.name)})</span>` : "";
   }
   $("kOnline").innerHTML = `${T.online}<small>/ ${T.count}</small>`;
-  const offline = s.miners.filter(m => m.status === "offline").map(m => m.name);
+  const offline = s.miners.filter(m => m.status === "offline" && !m.resting).map(m => m.name);
+  const resting = s.miners.filter(m => m.resting).map(m => m.name);
   const elsewhere = s.miners.filter(m => m.status !== "offline" && m.pool !== OWN).map(m => m.name);
   $("kOnlineSub").innerHTML = (offline.length ? `<span>offline: ${esc(offline.join(", "))}</span>` : "")
     + (elsewhere.length ? `<span>on other pools: ${esc(elsewhere.join(", "))}</span>` : "")
+    + (resting.length ? `<span>resting: ${esc(resting.join(", "))}</span>` : "")
     || `<span>all hashing on Solo45</span>`;
   // the pool keeps every block it found (and what the node said) across restarts
   const fb = ((s.solo45 || {}).blocks || []).slice().reverse();
@@ -907,7 +918,7 @@ function renderAlerts(s) {
   else if (so.up && so.proposal && so.proposal.ok === false) out.push(`<div class="alert bad"><span><b>Solo45:</b> your node rejected the pool's test block (${esc(so.proposal.result)}). Found blocks might be invalid, so point your miners at their backup pool until this is fixed.</span></div>`);
   for (const m of s.miners) {
     if (m.block_found) out.push(`<div class="alert found">🎉 ${esc(m.name)} reports a found block!</div>`);
-    if (m.status === "offline") out.push(`<div class="alert bad"><span><b>${esc(m.name)}</b> is not responding <span class="muted">(${esc(m.ip)})</span></span></div>`);
+    if (m.status === "offline" && !m.resting) out.push(`<div class="alert bad"><span><b>${esc(m.name)}</b> is not responding <span class="muted">(${esc(m.ip)})</span></span></div>`);
     else if (m.status === "warn") out.push(`<div class="alert"><span><b>${esc(m.name)}</b> ${esc(m.status_text)}</span></div>`);
   }
   $("alerts").innerHTML = out.join("");
@@ -984,6 +995,17 @@ $("miners").addEventListener("click", e => {
   const row = e.target.closest("tr.mrow");
   if (row && !e.target.closest("a")) toggleMiner(row);
 });
+$("miners").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-rest]");
+  if (!b) return;
+  b.disabled = true;
+  try {
+    const [r, j] = await minerPost({action: b.dataset.act, ip: b.dataset.rest});
+    b.textContent = r.ok ? "Saved" : "Not saved: " + (j.error || r.status);
+  } catch (err) {
+    b.textContent = "Not saved: " + err.message;
+  }
+});
 $("miners").addEventListener("keydown", e => {
   const row = e.target.closest("tr.mrow");
   if (row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleMiner(row); }
@@ -993,14 +1015,15 @@ let minersHtml = "";
 function renderMiners(s) {
   const tip = s.tip;
   const groups = {};
-  for (const m of s.miners) (groups[m.status === "offline" ? "Offline" : m.pool] ||= []).push(m);
-  const order = Object.keys(groups).sort((a, b) => (a === "Offline") - (b === "Offline") ||
+  for (const m of s.miners) (groups[m.resting ? "Resting" : m.status === "offline" ? "Offline" : m.pool] ||= []).push(m);
+  const last = g => g === "Resting" ? 2 : g === "Offline" ? 1 : 0;
+  const order = Object.keys(groups).sort((a, b) => last(a) - last(b) ||
     groups[b].reduce((x, m) => x + (m.ths || 0), 0) - groups[a].reduce((x, m) => x + (m.ths || 0), 0));
   const rows = [];
   for (const g of order) {
     const list = groups[g].sort((a, b) => (b.ths || 0) - (a.ths || 0) || a.name.localeCompare(b.name, undefined, {numeric: true}));
     const sum = list.reduce((x, m) => x + (m.status !== "offline" ? (m.ths || 0) : 0), 0);
-    rows.push(`<tr class="group-row"><td class="first" colspan="6"><i class="dot" style="background:${g === "Offline" ? "var(--bad)" : poolColor(g)}"></i>${esc(g)} <span class="muted">· ${list.length} miner${list.length > 1 ? "s" : ""}${g !== "Offline" ? " · " + fmtTH(sum) : ""}</span></td></tr>`);
+    rows.push(`<tr class="group-row"><td class="first" colspan="6"><i class="dot" style="background:${g === "Offline" ? "var(--bad)" : g === "Resting" ? "var(--muted, #8b8f98)" : poolColor(g)}"></i>${esc(g)} <span class="muted">· ${list.length} miner${list.length > 1 ? "s" : ""}${g === "Resting" ? " · switched off on purpose, no alerts" : g !== "Offline" ? " · " + fmtTH(sum) : ""}</span></td></tr>`);
     for (const m of list) {
       const off = m.status === "offline";
       const pct = m.expected_ths ? Math.min(100, (m.ths / m.expected_ths) * 100) : null;
@@ -1021,7 +1044,7 @@ function renderMiners(s) {
         : m.power_source === "estimate" ? "Braiins OS estimate (this power supply doesn't report its watts)" : "";
       rows.push(`<tr class="mrow${open ? " open" : ""}" data-miner="${esc(m.name)}" tabindex="0" aria-expanded="${open}" style="${off ? "opacity:.55" : ""}">
         <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}</div></td>
-        <td><span class="pill ${m.status}">${esc(m.status_text)}</span></td>
+        <td><span class="pill ${m.resting ? "resting" : m.status}">${esc(m.status_text)}</span></td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
         <td class="r num hide-sm"${powerTitle ? ` title="${esc(powerTitle)}"` : ""}>${m.power ? Math.round(m.power) + " W" : "—"}</td>
@@ -1042,6 +1065,9 @@ function renderMiners(s) {
         ${m.uptime_24h != null ? d("Online, 24 h", (m.uptime_24h * 100).toFixed(m.uptime_24h >= 0.999 ? 0 : 1) + "%") : ""}
         ${seen != null && !off ? d("Pool sees", Math.round(seen * 100) + "% of its work") : ""}
         ${d("Address", `<a href="http://${esc(m.ip)}" target="_blank" rel="noopener" style="color:var(--solo45)" class="sensitive">${esc(m.ip)}</a>`)}
+        ${off ? d("Switched off?", m.resting
+          ? `<button class="btn small" data-rest="${esc(m.ip)}" data-act="unrest">Not resting</button>`
+          : `<button class="btn small" data-rest="${esc(m.ip)}" data-act="rest" title="Off on purpose: no red banner and no phone alerts. Ends by itself when it answers again.">Mark as resting</button>`) : ""}
       </div></td></tr>`);
     }
   }
@@ -1050,7 +1076,7 @@ function renderMiners(s) {
     const focused = document.activeElement && document.activeElement.dataset && document.activeElement.dataset.miner;
     minersHtml = html;
     $("miners").innerHTML = html;
-    if (focused) { const r = $("miners").querySelector(`tr.mrow[data-miner="${CSS.escape(focused)}"]`); if (r) r.focus(); }
+    if (focused) { const r = $("miners").querySelector(`tr.mrow[data-miner="${CSS.escape(focused)}"]`); if (r) r.focus({preventScroll: true}); }
   }
   $("minerCount").textContent = `${s.totals.online} of ${s.totals.count} online`;
 }

@@ -56,9 +56,11 @@ CFG = {
     "ckpool_log": os.environ.get("GOBRRR_LOG") or "",  # a ckpool-based pool's log (e.g. Go Brrr), for its timings
     "miners": [],   # extra miner IPs, on top of those connected to Solo45 (or found in a ckpool log)
     "ignore": [],   # miner IPs to leave out entirely
+    "resting": [],  # miner IPs switched off on purpose: shown as Resting, no alerts; cleared when they answer again
     "avalon_fan": {},     # Avalon IP -> fixed fan % set on the dashboard
     "avalon_target": {},  # Avalon IP -> chip temperature (°C) the dashboard holds by adjusting the fan
-    "pools": {"23334": "Datum", "21420": "Go Brrr", "21422": "Go Brrr (high diff)", "3333": "Solo45"},
+    "pools": {"23334": "Datum", "21420": "Go Brrr", "21422": "Go Brrr (high diff)", "3333": "Solo45",
+              "3346": "Solo45 SV2", "34255": "Solo45 SV2"},
     "poll_seconds": 5,
     "solo45_api": SOLO45 + "/api",
     "solo45_settings_api": SOLO45 + "/api/worker",
@@ -1924,13 +1926,28 @@ def snapshot():
     with lock:
         tip = S["tip"]
         now = time.time()
-        miners = []
+        miners, back = [], []
         for ip in miner_ips():
             m = S["miners"].get(ip)
             if not m or "kind" not in m:
                 continue
             st, why = miner_status(m, tip)
-            miners.append(dict(m, status=st, status_text=why, **miner_extras(m, now)))
+            rest = ip in CFG["resting"]
+            if rest and st == "offline":
+                why = "Resting"
+            elif rest and m.get("ok"):
+                back.append(ip)  # it answers again: no longer resting
+            # a Bitaxe's own "found a block" flag counts only if its best share since restart could be a block
+            # (some pools' placeholder jobs set it on every connect)
+            bf = bool(m.get("block_found")) and not (m.get("kind") == "bitaxe" and S["netdiff"] and
+                                                     (m.get("best_session") or 0) < S["netdiff"])
+            miners.append(dict(m, status=st, status_text=why, resting=rest and st == "offline", block_found=bf,
+                               **miner_extras(m, now)))
+        if back:
+            keep = [x for x in CFG["resting"] if x not in back]
+            CFG["resting"] = keep
+            save_config({"resting": keep})
+            print("no longer resting (answering again): %s" % ", ".join(back), flush=True)
         up = [m for m in miners if m["status"] != "offline"]
         total = sum(m.get("ths") or 0 for m in up)
         by_pool = {}
@@ -1980,7 +1997,8 @@ def snapshot():
                 "extra_miners": list(CFG["miners"]),
                 "j_per_th": power / total if total else None,
                 "online": len(up),
-                "count": len(miners),
+                "count": len([m for m in miners if not m["resting"]]),
+                "resting": [m["name"] for m in miners if m["resting"]],
                 "netdiff": nd,
                 "reward_sats": S["reward_sats"],
                 "odds": odds(total),
@@ -2079,6 +2097,15 @@ def manage_miner(data, probe=None):
     action, ip = data.get("action"), str(data.get("ip") or "").strip()
     if not lan_ipv4(ip):
         return 400, {"error": "enter the miner's address on your network, like 192.168.1.50"}
+    if action in ("rest", "unrest"):
+        with lock:
+            if action == "rest" and ip not in S["miners"]:
+                return 404, {"error": "no miner at %s on the dashboard" % ip}
+            keep = [x for x in CFG["resting"] if x != ip] + ([ip] if action == "rest" else [])
+            CFG["resting"] = keep
+        save_config({"resting": keep})
+        print("miner %s %s" % (ip, "marked resting" if action == "rest" else "no longer resting"), flush=True)
+        return 200, {"ok": True, "resting": keep}
     if action == "remove":
         with lock:
             if ip not in CFG["miners"]:
@@ -2291,6 +2318,8 @@ def notify_conditions(snap):
     out = {}
     for m in snap["miners"]:
         name = m.get("name") or m["ip"]
+        if m.get("resting"):
+            continue
         if m["status"] == "offline":
             out["offline:" + name] = ("offline", "%s is not responding" % name,
                                       "%s (%s) isn't answering. Check its power and Wi-Fi." % (name, m["ip"]),
@@ -2369,9 +2398,10 @@ def notify_loop():
             for ev in notify_events(snap, memo):
                 send_alert(*ev)
             current = notify_conditions(snap)
+            resting = {"offline:" + (m.get("name") or m["ip"]) for m in snap["miners"] if m.get("resting")}
             for key in [k for k in active if k not in current]:
                 a = active.pop(key)
-                if a["sent"]:
+                if a["sent"] and key not in resting:
                     send_alert(a["kind"], a["fixed"], "All clear.", 2, "white_check_mark")
             wait = max(1, int(CFG["notify"].get("after_min") or 10)) * 60
             for key, (kind, title, message, fixed) in current.items():
@@ -2495,6 +2525,7 @@ def make_backup():
         "pool": solo45_get("/api/export"),
         "dashboard": {
             "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
+            "resting": CFG["resting"],
             "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
             "volt_floors": json.loads(json.dumps(volt_floors)),
             "avalon_fan": dict(CFG.get("avalon_fan") or {}), "avalon_target": dict(CFG.get("avalon_target") or {}),
@@ -2533,7 +2564,7 @@ def restore_backup(data):
     dash = data.get("dashboard") or {}
     if "kwh_price" in dash or "currency" in dash:
         step("electricity price", save_dash_settings({k: dash[k] for k in ("kwh_price", "currency") if k in dash}))
-    lists = {k: [ip for ip in dash.get(k) or [] if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", str(ip))] for k in ("miners", "ignore")}
+    lists = {k: [ip for ip in dash.get(k) or [] if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", str(ip))] for k in ("miners", "ignore", "resting")}
     if any(lists.values()):
         save_config(lists)
         CFG.update(lists)

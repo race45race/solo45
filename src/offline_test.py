@@ -558,6 +558,43 @@ server.S["miners"]["10.9.9.12"] = {"ip": "10.9.9.12", "fails": 9, "first_seen": 
 server.S["miners"]["10.9.9.13"] = {"ip": "10.9.9.13", "fails": 0, "first_seen": time.time() - 2 * 86400, "last_ok": time.time() - 60}
 _ips = server.miner_ips()
 check("a miner gone for a day leaves the table, a working one stays", "10.9.9.12" not in _ips and "10.9.9.13" in _ips)
+# v0.1.75: a miner switched off on purpose is "Resting": no banner or alert, not counted, cleared when it answers;
+# a Bitaxe's found-block flag counts only when its best share since restart reaches the network difficulty
+_now = time.time()
+server.S["miners"].clear()
+server.S["miners"]["10.9.9.40"] = {"ip": "10.9.9.40", "name": "S19Test", "kind": "braiins", "pool": "Solo45", "ok": False,
+                                   "fails": 5, "first_seen": _now - 3600, "last_ok": _now - 600}
+server.S["miners"]["10.9.9.41"] = {"ip": "10.9.9.41", "name": "AxeTest", "kind": "bitaxe", "pool": "Solo45", "ok": True,
+                                   "fails": 0, "first_seen": _now - 3600, "last_ok": _now, "ths": 1.5,
+                                   "block_found": True, "best_session": 5e6}
+_saved_rest, _saved_nd = list(server.CFG["resting"]), server.S["netdiff"]
+server.S["netdiff"] = 1.4e14
+try:
+    _c0 = server.notify_conditions(server.snapshot())
+    _rs = server.manage_miner({"action": "rest", "ip": "10.9.9.40"})
+    _s1 = server.snapshot()
+    _m1 = {m["ip"]: m for m in _s1["miners"]}
+    _c1 = server.notify_conditions(_s1)
+    _disk = json.load(open(server.CFG_PATH)).get("resting")
+    server.S["miners"]["10.9.9.40"].update(ok=True, fails=0, last_ok=time.time())
+    _s2 = server.snapshot()
+    _left = list(server.CFG["resting"])
+    _rest_ok = ("offline:S19Test" in _c0 and _rs[0] == 200 and _m1["10.9.9.40"]["resting"]
+                and _m1["10.9.9.40"]["status_text"] == "Resting" and "offline:S19Test" not in _c1
+                and _s1["totals"]["count"] == 1 and _s1["totals"]["resting"] == ["S19Test"] and _disk == ["10.9.9.40"]
+                and _left == [] and not {m["ip"]: m for m in _s2["miners"]}["10.9.9.40"]["resting"])
+    _bf_ok = _m1["10.9.9.41"]["block_found"] is False
+    server.S["miners"]["10.9.9.41"]["best_session"] = 2e14
+    _bf_ok = _bf_ok and {m["ip"]: m for m in server.snapshot()["miners"]}["10.9.9.41"]["block_found"] is True
+    _detail = "(%s %s %s %s)" % (_rs[0], _s1["totals"].get("resting"), _disk, _left)
+except Exception as e:
+    _rest_ok = _bf_ok = False
+    _detail = "(%r)" % e
+server.CFG["resting"] = _saved_rest
+server.S["netdiff"] = _saved_nd
+server.S["miners"].clear()
+check("resting miner: no alert, not counted, saved, ends when it answers again", _rest_ok, _detail)
+check("a Bitaxe's found-block flag needs a share as big as the network difficulty", _bf_ok)
 server.S["miners"].clear()
 server.S["miners"].update(_saved)
 _workers = server.S["solo45"].get("workers")
