@@ -16,7 +16,10 @@ import json
 import math
 import os
 import queue
+import random
 import re
+import ssl
+import hashlib
 import signal
 import socket
 import threading
@@ -49,6 +52,8 @@ TUNING_PATH = os.path.join(DATA, "tuning_history.json")  # each Bitaxe's speed/v
 EVER_PATH = os.path.join(DATA, "best_ever.json")  # each miner's highest best share seen (survives miner restarts)
 ROUND_PATH = os.path.join(DATA, "best_round.json")  # each miner's best share since the owner last pressed Refresh
 NTFY_TOKEN_PATH = os.path.join(DATA, "ntfy_token")  # only for a password-protected ntfy server
+WEEK_PATH = os.path.join(DATA, "week.json")  # this week's numbers for the Sunday report
+PAYOUTS_PATH = os.path.join(DATA, "payouts.json")  # payments the watched addresses received (looked up, opt-in)
 
 CFG = {
     "port": 8099,
@@ -76,9 +81,11 @@ CFG = {
     "kwh_price": 0.12,  # price per kWh for the electricity cost figures; set on the dashboard
     "currency": "$",    # symbol shown with costs
     "timezone": "",     # the user's time zone, taken from their browser, e.g. America/Chicago ("" = the server's)
+    # addresses whose payments the Payouts card shows (off until the user enters one: it asks a public server)
+    "payout_watch": {"btc": "", "bch": ""},
     # phone alerts through ntfy (https://ntfy.sh or your own server); off until the user turns them on
     "notify": {"on": False, "server": "https://ntfy.sh", "topic": "", "after_min": 10, "click": "",
-               "events": {"block": True, "best": True, "offline": True, "hot": True, "node": True}},
+               "events": {"block": True, "best": True, "offline": True, "hot": True, "node": True, "weekly": True}},
 }
 if os.path.exists(CFG_PATH):
     with open(CFG_PATH) as f:
@@ -126,6 +133,8 @@ S = {
     "temps": {},         # name -> [[t, chip, vr, online], ...] every 5 minutes for 24 h
     "node": {},          # node, network, difficulty-adjustment and halving stats
     "notify_log": [],    # the last phone alerts sent, newest first: {"t", "title"}
+    "week": {},          # {"start", "sent", "miners": {name: {n, up, ths, wh, acc, rej, last}}}: the weekly report
+    "payouts": {},       # coin -> {"addr", "checked", "error", "rx": [[t, sats, coinbase, txid], ...]}
 }
 ck_pending = {}          # block hash -> ckpool "Block hash changed" time (ms)
 solo_pending = {}        # block hash -> time (ms) Solo45 sent work on top of it
@@ -599,6 +608,7 @@ def poll_bitaxe(ip):
         "uptime": i.get("uptimeSeconds"),
         "pool": pool_name(i.get("stratumURL"), i.get("stratumPort")),
         "on_fallback": bool(i.get("isUsingFallbackStratum")),
+        "user": i.get("fallbackStratumUser") if i.get("isUsingFallbackStratum") else i.get("stratumUser"),
         "netdiff": as_num(i.get("networkDifficulty")),
         "reward_sats": i.get("coinbaseValueTotalSatoshis"),
         "block_found": bool(i.get("blockFound")),
@@ -1005,6 +1015,20 @@ def avalon_fan_control(ip, temp, fan_now, now=None):
         avalon_ctl.pop(ip, None)
         return None
     c = avalon_ctl.setdefault(ip, {"pct": int(fixed or fan_now or 30), "at": 0})
+    if c.get("paused_until", 0) > now:
+        return None
+    # Someone else (another dashboard, the miner's own app) set a different fan since this dashboard's last change.
+    # Twice within 15 minutes: step back for 20-40 minutes instead of fighting over it.
+    if (c["at"] and fan_now is not None and now - c["at"] >= 20 and abs(fan_now - c["pct"]) >= 5
+            and (temp is None or temp < AVALON_HOT_C - 3) and fan_now != c.get("seen_other")):
+        c["seen_other"] = fan_now
+        c["others"] = [x for x in c.get("others", []) if now - x < 900] + [now]
+        if len(c["others"]) >= 2:
+            c["paused_until"], c["others"] = now + random.uniform(1200, 2400), []
+            print("Avalon %s: the fan keeps being changed from elsewhere (now %s%%, this dashboard set %s%%): pausing "
+                  "this dashboard's fan control for %d min" % (ip, int(fan_now), c["pct"], (c["paused_until"] - now) // 60),
+                  flush=True)
+            return None
     if now - c["at"] < AVALON_STEP_S:
         return None
     pct = c["pct"]
@@ -1227,6 +1251,12 @@ def track_daily_best(ip, result, t):
     if S["daily"].get("date") != today:
         archive_day()
         S["daily"] = {"date": today, "since": t, "miners": {}}  # bests and hashes both count from "since"
+    if result.get("other_coin"):  # shares on another coin's pool aren't Bitcoin shares: they don't count here
+        last_polled[ip] = t
+        b = result.get("best_session") if result.get("kind") in ("bitaxe", "thor") else result.get("best")
+        if b is not None:
+            session_best[ip] = b  # so its old-coin record isn't taken for a new Bitcoin best when it comes back
+        return
     d = S["daily"]["miners"].setdefault(result["name"], {"best": 0, "at": None, "hashes": 0.0})
     dt = min(t - last_polled.get(ip, t), 15)  # a gap (miner offline, dashboard restart) counts as 15 s at most
     d["hashes"] += (result.get("ths") or 0) * 1e12 * dt
@@ -1556,11 +1586,27 @@ def restore_volt_floors(floors):
     return kept
 
 
+CASHADDR = re.compile(r"^(bitcoincash:)?[qp][02-9ac-hj-np-z]{41}$", re.I)
+
+
+def other_coin(result):
+    """Is the miner mining another coin right now (lock held)? A Bitcoin Cash address as its username, or a
+    network difficulty far below Bitcoin's (from the job its pool sends; 1 is a placeholder job, not a coin)."""
+    user = str(result.get("user") or "").split(".")[0].strip()
+    if CASHADDR.match(user):
+        return "BCH"
+    nd, ref = result.get("netdiff"), S["netdiff"]
+    if nd and ref and 1 < nd < ref * 0.05:
+        return "another coin"
+    return None
+
+
 def record(ip, result, err):
     t = time.time()
     with lock:
         m = S["miners"].setdefault(ip, {"ip": ip, "fails": 0, "first_seen": t})
         if result:
+            result["other_coin"] = other_coin(result)
             track_daily_best(ip, result, t)
             track_error_rate(ip, result, t)
             track_domains(ip, result, t)
@@ -1762,7 +1808,7 @@ def track_ever():
     reported number alone can drop below today's. Returns True when a record rose."""
     ever, rose = S["ever"], False
     vals = [(n, d.get("best")) for n, d in merged_daily().items()]
-    vals += [(m.get("name"), m.get("best")) for m in S["miners"].values() if m.get("name")]
+    vals += [(m.get("name"), m.get("best")) for m in S["miners"].values() if m.get("name") and not m.get("other_coin")]
     for name, v in vals:
         if isinstance(v, (int, float)) and v > (ever.get(name) or 0):
             ever[name], rose = v, True
@@ -1896,6 +1942,7 @@ def miner_extras(m, now):
         "uptime_24h": sum(r[3] for r in rows) / len(rows) if len(rows) >= 6 else None,
         "temp_trend": [[r[1], r[2]] for r in rows[::step]],
         "pool_ths": pool_ths,
+        "fan_paused_until": (avalon_ctl.get(m.get("ip")) or {}).get("paused_until") if m.get("kind") == "avalon" else None,
         **height,
     }
 
@@ -2008,6 +2055,8 @@ def snapshot():
             },
             "history": S["history"],
             "found": S["found"][-5:],
+            "payouts": payouts_view(),
+            "payout_watch": dict(CFG.get("payout_watch") or {}),
         }
 
 
@@ -2106,6 +2155,20 @@ def manage_miner(data, probe=None):
         save_config({"resting": keep})
         print("miner %s %s" % (ip, "marked resting" if action == "rest" else "no longer resting"), flush=True)
         return 200, {"ok": True, "resting": keep}
+    if action == "forget":  # a replaced unit: its tuning changes and voltage floors belonged to the old chip
+        with lock:
+            name = (S["miners"].get(ip) or {}).get("name")
+            if not name:
+                return 404, {"error": "no miner at %s on the dashboard" % ip}
+            before = len(tuning_history)
+            tuning_history[:] = [e for e in tuning_history if e.get("name") != name]
+            changes = before - len(tuning_history)
+            floors = len(volt_floors.pop(name, None) or {})
+            th, vf = list(tuning_history), json.loads(json.dumps(volt_floors))
+        save_json(TUNING_PATH, th)
+        save_json(VOLT_PATH, vf)
+        print("tuning history of %s forgotten (%d changes, %d voltage floors)" % (name, changes, floors), flush=True)
+        return 200, {"ok": True, "name": name, "changes": changes, "floors": floors}
     if action == "remove":
         with lock:
             if ip not in CFG["miners"]:
@@ -2206,14 +2269,132 @@ def sample_temps(now):
         del rows[:-288]
 
 
+WEEK_SAMPLE_S = 30  # history_loop's step
+
+
+def track_week(miners, now):
+    """Add one 30 s sample of every miner to this week's numbers (lock held)."""
+    w = S["week"]
+    if not w.get("start"):
+        w.update({"start": now, "miners": {}})
+    for m in miners:
+        name = m.get("name")
+        if not name or m.get("resting"):
+            continue
+        r = w["miners"].setdefault(name, {"n": 0, "up": 0, "ths": 0.0, "wh": 0.0, "acc": 0, "rej": 0, "last": None})
+        r["n"] += 1
+        if m.get("status") != "offline":
+            r["up"] += 1
+            r["ths"] += m.get("ths") or 0
+            r["wh"] += (m.get("power") or 0) * WEEK_SAMPLE_S / 3600
+        acc, rej = m.get("accepted"), m.get("rejected")
+        if isinstance(acc, (int, float)) and isinstance(rej, (int, float)) and m.get("status") != "offline":
+            last = r["last"]
+            if last and acc >= last[0] and rej >= last[1]:
+                r["acc"] += acc - last[0]
+                r["rej"] += rej - last[1]
+            elif last:  # the miner restarted: its counters began again at 0
+                r["acc"] += acc
+                r["rej"] += rej
+            r["last"] = [acc, rej]
+
+
+def local_at(t):
+    try:
+        return datetime.fromtimestamp(t, ZoneInfo(CFG["timezone"])) if CFG.get("timezone") else datetime.fromtimestamp(t).astimezone()
+    except Exception:
+        return datetime.fromtimestamp(t).astimezone()
+
+
+def week_report(now):
+    """(title, message) for the week so far (lock held)."""
+    w = S["week"]
+    start = w.get("start") or now
+    first = local_at(start).strftime("%Y-%m-%d")
+    bests = {}  # name -> best share this week: each finished day's records, then today's
+    for h in S["best_history"]:
+        if isinstance(h, dict) and str(h.get("date") or "") >= first:
+            for name, v in (h.get("miners") or {}).items():
+                if isinstance(v, (int, float)) and v > bests.get(name, 0):
+                    bests[name] = v
+    for name, d in merged_daily().items():
+        if (d.get("best") or 0) > bests.get(name, 0):
+            bests[name] = d["best"]
+    rows, tot_ths, tot_wh = [], 0.0, 0.0
+    for name, r in w.get("miners", {}).items():
+        if not r["n"] or not r["up"]:
+            continue
+        ths, cost = r["ths"] / r["n"], r["wh"] / 1000 * CFG["kwh_price"]
+        tot_ths += ths
+        tot_wh += r["wh"]
+        shares = r["acc"] + r["rej"]
+        rows.append((ths, "%s: %s, online %d%%%s, best %s, %s%.2f" % (
+            name, ("%.0f TH/s" % ths) if ths >= 10 else ("%.2f TH/s" % ths), round(100 * r["up"] / r["n"]),
+            (", %.2f%% rejected" % (100 * r["rej"] / shares)) if shares >= 50 else "",
+            fmt_diff(bests[name]) if bests.get(name) else "-", CFG["currency"], cost)))
+    rows.sort(key=lambda x: -x[0])
+    days = (now - start) / 86400
+    top = max(bests.items(), key=lambda kv: kv[1]) if bests else None
+    found = [f for f in S["found"] if isinstance(f, dict) and (f.get("t") or 0) / 1000 >= start]
+    lines = ["%s to %s (%.1f days)" % (local_at(start).strftime("%a %b %d"), local_at(now).strftime("%a %b %d"), days),
+             "Fleet: %.0f TH/s on average, %.0f kWh, %s%.2f" % (tot_ths, tot_wh / 1000, CFG["currency"], tot_wh / 1000 * CFG["kwh_price"]),
+             "Best share: %s (%s)" % (fmt_diff(top[1]), top[0]) if top else "Best share: -",
+             "Blocks found: %d" % len(found), ""] + [r[1] for r in rows]
+    return APP_NAME + " weekly report", "\n".join(lines)
+
+
+def maybe_send_week(now):
+    """Sunday from 9 AM: send the week's report once and start a new week."""
+    lt = local_now()
+    if lt.weekday() != 6 or lt.hour < 9:
+        return
+    key = lt.strftime("%Y-%m-%d")
+    with lock:
+        w = S["week"]
+        if w.get("sent") == key:
+            return
+        if now - (w.get("start") or now) < 86400:  # less than a day of numbers: the first report comes next week
+            w["sent"] = key
+            return
+        title, body = week_report(now)
+    send_alert("weekly", title, body, 3, "bar_chart")
+    with lock:
+        S["week"] = {"start": now, "miners": {}, "sent": key}
+        week = json.loads(json.dumps(S["week"]))
+    try:
+        save_json(WEEK_PATH, week)
+    except OSError:
+        pass
+
+
+def week_now():
+    """The report for the week so far, sent now (the Send button); the week goes on."""
+    c = CFG["notify"]
+    if not c.get("topic"):
+        return 400, {"error": "save a topic first"}
+    with lock:
+        title, body = week_report(time.time())
+    try:
+        ntfy_send(title + " (so far)", body, 3, "bar_chart")
+    except Exception as e:
+        return 502, {"error": "couldn't send it: %s" % e}
+    with lock:
+        S["notify_log"].insert(0, {"t": time.time(), "title": title + " (so far)"})
+        del S["notify_log"][10:]
+    return 200, {"ok": True, "report": body}
+
+
 def history_loop():
     last_save = time.time()
     n = 0
     while True:
         time.sleep(30)
         n += 1
-        snap = snapshot()["totals"]
+        full = snapshot()
+        snap = full["totals"]
         with lock:
+            track_week(full["miners"], time.time())
+            week = json.loads(json.dumps(S["week"]))
             S["history"].append([int(time.time()), round(snap["ths"], 3),
                                  {k: round(v, 3) for k, v in snap["by_pool"].items()}])
             del S["history"][:-2880]
@@ -2227,6 +2408,7 @@ def history_loop():
         try:
             save_json(DAILY_PATH, daily)
             save_json(WORK_PATH, work)
+            save_json(WEEK_PATH, week)
             if rnd.get("since"):
                 save_json(ROUND_PATH, rnd)
             if ever:
@@ -2262,7 +2444,7 @@ def state_push_loop():
 
 # -------------------------------------------------------------- phone alerts
 
-NOTIFY_KINDS = ("block", "best", "offline", "hot", "node")
+NOTIFY_KINDS = ("block", "best", "offline", "hot", "node", "weekly")
 
 
 def fmt_diff(d):
@@ -2397,6 +2579,7 @@ def notify_loop():
             snap, now = snapshot(), time.time()
             for ev in notify_events(snap, memo):
                 send_alert(*ev)
+            maybe_send_week(now)
             current = notify_conditions(snap)
             resting = {"offline:" + (m.get("name") or m["ip"]) for m in snap["miners"] if m.get("resting")}
             for key in [k for k in active if k not in current]:
@@ -2482,6 +2665,178 @@ def notify_test():
     return 200, {"ok": True}
 
 
+# ------------------------------------------------------------ pool payouts (opt-in)
+
+PAYOUT_EVERY_S = 1800
+ELECTRUM = [("bch.imaginary.cash", 50002), ("electroncash.de", 50002), ("bch.loping.net", 50002)]
+MEMPOOL_API = "https://mempool.space/api"
+B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+BTC_ADDR = re.compile(r"^(bc1[02-9ac-hj-np-z]{8,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$")
+payouts_wake = threading.Event()
+
+
+def cashaddr_script(addr):
+    """The output script of a CashAddr P2PKH (q...) or P2SH (p...) address."""
+    data = [B32.find(c) for c in addr.lower().split(":", 1)[-1][:-8]]
+    if -1 in data:
+        raise ValueError("not a CashAddr")
+    acc = bits = 0
+    payload = []
+    for v in data:
+        acc, bits = (acc << 5) | v, bits + 5
+        while bits >= 8:
+            bits -= 8
+            payload.append((acc >> bits) & 255)
+    kind, h = payload[0] >> 3, bytes(payload[1:21])
+    if kind == 0:
+        return bytes([0x76, 0xa9, 0x14]) + h + bytes([0x88, 0xac])
+    if kind == 1:
+        return bytes([0xa9, 0x14]) + h + bytes([0x87])
+    raise ValueError("unknown CashAddr type")
+
+
+class Electrum:
+    """A public Bitcoin Cash Electrum (Fulcrum) server, over TLS; the first one that answers."""
+    def __init__(self, timeout=20):
+        self.f, self.n = None, 0
+        err = None
+        for host, port in ELECTRUM:
+            try:
+                s = ssl.create_default_context().wrap_socket(socket.create_connection((host, port), timeout),
+                                                             server_hostname=host)
+                self.f = s.makefile("rwb")
+                self.call("server.version", ["solo45-dashboard", "1.4"])
+                return
+            except Exception as e:
+                err = e
+        raise RuntimeError("no Bitcoin Cash server answered (%s)" % err)
+
+    def call(self, method, params):
+        self.n += 1
+        self.f.write((json.dumps({"id": self.n, "method": method, "params": params}) + "\n").encode())
+        self.f.flush()
+        reply = json.loads(self.f.readline())
+        if reply.get("error"):
+            raise RuntimeError("%s: %s" % (method, reply["error"]))
+        return reply["result"]
+
+
+def fetch_bch(addr, known):
+    """New payments to a BCH address: {txid: [t, sats, coinbase]} for txids not in `known` (net of its own inputs)."""
+    spk = cashaddr_script(addr)
+    el = Electrum()
+    cache = {}
+
+    def tx(txid):
+        if txid not in cache:
+            cache[txid] = el.call("blockchain.transaction.get", [txid, True])
+        return cache[txid]
+    out = {}
+    for h in el.call("blockchain.scripthash.get_history", [hashlib.sha256(spk).digest()[::-1].hex()]):
+        if h["height"] <= 0 or h["tx_hash"] in known:
+            continue
+        t = tx(h["tx_hash"])
+        got = sum(round(o["value"] * 1e8) for o in t["vout"] if o["scriptPubKey"]["hex"] == spk.hex())
+        spent, coinbase = 0, False
+        for i in t["vin"]:
+            if "coinbase" in i:
+                coinbase = True
+                continue
+            prev = tx(i["txid"])["vout"][i["vout"]]
+            if prev["scriptPubKey"]["hex"] == spk.hex():
+                spent += round(prev["value"] * 1e8)
+        out[h["tx_hash"]] = [t.get("blocktime") or t.get("time"), got - spent, coinbase]
+    return out
+
+
+def fetch_btc(addr, known):
+    """New payments to a BTC address from mempool.space (confirmed only)."""
+    out, last = {}, None
+    for _ in range(20):  # at most 500 transactions back
+        page = http_json(MEMPOOL_API + "/address/%s/txs/chain%s" % (addr, "/" + last if last else ""), timeout=20)
+        if not page:
+            break
+        for t in page:
+            if t["txid"] in known or not t["status"].get("block_time"):
+                continue
+            got = sum(o["value"] for o in t["vout"] if o.get("scriptpubkey_address") == addr)
+            spent = sum((i.get("prevout") or {}).get("value", 0) for i in t["vin"]
+                        if (i.get("prevout") or {}).get("scriptpubkey_address") == addr)
+            out[t["txid"]] = [t["status"]["block_time"], got - spent, any(i.get("is_coinbase") for i in t["vin"])]
+        if len(page) < 25 or page[-1]["txid"] in known:
+            break
+        last = page[-1]["txid"]
+    return out
+
+
+def payouts_loop():
+    """Every 30 minutes (and right after the addresses change): what the watched addresses received."""
+    saved = load_json(PAYOUTS_PATH, {})
+    with lock:
+        S["payouts"] = saved if isinstance(saved, dict) else {}
+    while True:
+        for coin, fetch in (("bch", fetch_bch), ("btc", fetch_btc)):
+            addr = (CFG.get("payout_watch") or {}).get(coin) or ""
+            with lock:
+                p = S["payouts"].get(coin) or {}
+                if p.get("addr") != addr:
+                    p = {"addr": addr, "txs": {}}  # a new address: start over
+                known = dict(p.get("txs") or {})
+            if not addr:
+                with lock:
+                    S["payouts"].pop(coin, None)
+                continue
+            try:
+                new = fetch(addr, known)
+                known.update(new)
+                err = None
+            except Exception as e:
+                err = str(e)[:160]
+                print("payouts %s: %s" % (coin.upper(), err), flush=True)
+            with lock:
+                S["payouts"][coin] = {"addr": addr, "checked": time.time(), "error": err, "txs": known}
+        with lock:
+            data = json.loads(json.dumps(S["payouts"]))
+        try:
+            save_json(PAYOUTS_PATH, data)
+        except OSError:
+            pass
+        payouts_wake.wait(PAYOUT_EVERY_S)
+        payouts_wake.clear()
+
+
+def payouts_view():
+    """What the page shows: per coin the address, when it was checked, and the payments, newest first (lock held)."""
+    out = {}
+    for coin, p in (S["payouts"] or {}).items():
+        rx = sorted(([v[0], v[1], v[2], k] for k, v in (p.get("txs") or {}).items() if v[1] > 0 and v[0]), reverse=True)
+        out[coin] = {"addr": p.get("addr"), "checked": p.get("checked"), "error": p.get("error"), "rx": rx[:400]}
+    return out
+
+
+def set_payout_watch(data):
+    """The addresses the Payouts card watches (empty = off)."""
+    new = {}
+    for coin in ("btc", "bch"):
+        a = str(data.get(coin) or "").strip()
+        if coin == "bch" and a:
+            if not CASHADDR.match(a):
+                return 400, {"error": "that isn't a Bitcoin Cash address (bitcoincash:q... or q...)"}
+            a = a.lower() if a.lower().startswith("bitcoincash:") else "bitcoincash:" + a.lower()
+            try:
+                cashaddr_script(a)
+            except ValueError as e:
+                return 400, {"error": "that isn't a Bitcoin Cash address: %s" % e}
+        if coin == "btc" and a and not BTC_ADDR.match(a):
+            return 400, {"error": "that isn't a Bitcoin address"}
+        new[coin] = a
+    save_config({"payout_watch": new})
+    with lock:
+        CFG["payout_watch"] = new
+    payouts_wake.set()
+    return 200, {"ok": True, "payout_watch": new}
+
+
 # ------------------------------------------------------------ home-screen widget
 
 def short_num(n):
@@ -2526,6 +2881,7 @@ def make_backup():
         "dashboard": {
             "kwh_price": CFG["kwh_price"], "currency": CFG["currency"], "miners": CFG["miners"], "ignore": CFG["ignore"],
             "resting": CFG["resting"],
+            "payout_watch": dict(CFG.get("payout_watch") or {}),
             "notify": {k: CFG["notify"][k] for k in BACKUP_NOTIFY_KEYS},
             "volt_floors": json.loads(json.dumps(volt_floors)),
             "avalon_fan": dict(CFG.get("avalon_fan") or {}), "avalon_target": dict(CFG.get("avalon_target") or {}),
@@ -2787,6 +3143,12 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/restore":
             code, reply = restore_backup(data)
             return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/notify/weekly":
+            code, reply = week_now()
+            return self.send(code, json.dumps(reply).encode(), "application/json")
+        if path == "/api/dash/payouts":
+            code, reply = set_payout_watch(data)
+            return self.send(code, json.dumps(reply).encode(), "application/json")
         if path in ("/api/notify/settings", "/api/notify/test"):
             code, reply = save_notify_settings(data) if path.endswith("settings") else notify_test()
             return self.send(code, json.dumps(reply).encode(), "application/json")
@@ -2811,6 +3173,9 @@ def main():
             if isinstance(v, (int, float)) and v > (S["ever"].get(name) or 0):
                 S["ever"][name] = v
     S["work"] = load_json(WORK_PATH, {})
+    S["week"] = load_json(WEEK_PATH, {})
+    if not isinstance(S["week"], dict) or not isinstance(S["week"].get("miners", {}), dict):
+        S["week"] = {}
     S["temps"] = load_json(TEMPS_PATH, {})
     for ip, last_ok in load_json(KNOWN_PATH, {}).items():
         if isinstance(last_ok, (int, float)) and time.time() - last_ok < STALE_MINER_S:
@@ -2838,7 +3203,7 @@ def main():
     else:
         feed = (tip_poll_loop, ())
     loops = [feed, (poll_loop, ()), (history_loop, ()), (state_push_loop, ()),
-             (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ())]
+             (solo45_loop, ()), (braiins_work_loop, ()), (node_loop, ()), (notify_loop, ()), (payouts_loop, ())]
     if CFG["ckpool_log"] and os.path.exists(CFG["ckpool_log"]):  # a ckpool-based pool (like Go Brrr) on this Umbrel
         print("reading the ckpool log for Go Brrr timings...", flush=True)
         try:

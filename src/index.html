@@ -429,6 +429,11 @@ body.privacy .sensitive { filter: blur(6px); }
     <div class="ai-foot" style="margin:8px 0 0"><span>Miner auto: the miner runs its fan as slowly as it can until its chips average about 90 °C (quiet, but hot). Hold °C: the dashboard adjusts the fan once a minute to keep the chip average near that temperature (a few minutes to settle; at its 15% minimum fan a cool room can keep it below the target, and at 85 °C the fan goes to 100%). Fixed %: one fan speed. Cooler chips usually give a little more hashrate, for more fan noise. The dashboard must be running to hold a temperature; if the miner restarts, the dashboard sets the fan again. Changing the work mode makes the miner re-tune for a few minutes.</span></div>
   </section>
 
+  <section class="card" style="margin-bottom:12px;display:none" id="payoutCard">
+    <h2>Pool payouts <span class="muted">what your watched addresses received, checked every 30 minutes</span></h2>
+    <div id="payoutBox"></div>
+  </section>
+
   <section class="grid2">
     <div class="card" id="blockCard">
       <h2>Latest block <span class="muted">how fast your miners switched</span></h2>
@@ -520,6 +525,14 @@ body.privacy .sensitive { filter: blur(6px); }
       <span class="muted" id="addIpNote" role="status"></span>
     </div>
     <div id="extraMiners" style="display:flex;flex-wrap:wrap;gap:6px;margin:0 0 6px"></div>
+    <div class="setting-ctl" style="flex-wrap:wrap;margin-bottom:6px">
+      <label for="payBch">Payouts to watch:</label>
+      <input type="text" id="payBch" class="sensitive" placeholder="Bitcoin Cash address (bitcoincash:q…)" autocomplete="off" spellcheck="false" style="width:300px">
+      <input type="text" id="payBtc" class="sensitive" placeholder="Bitcoin address (bc1…)" autocomplete="off" spellcheck="false" style="width:300px">
+      <button class="btn small" id="payWatchSave" type="button">Save</button>
+      <span class="muted" id="payWatchNote" role="status"></span>
+    </div>
+    <div class="ai-foot" style="margin:0 0 14px">Shows what other pools paid you (the Payouts card on Details). Off until you enter an address: then the dashboard asks a public server every 30 minutes what that address received (a Bitcoin Cash Electrum server, or mempool.space for Bitcoin). That server learns the address; nothing else leaves your network. Leave both empty to turn it off.</div>
     <div class="ai-foot" style="margin:0 0 14px">For a miner on another pool. Miners on Solo45 show up by themselves. The dashboard reads Bitaxe (AxeOS), Braiins OS, Thor OS, MARA and stock Bitmain firmware, and asks the miner first, so only an address that answers like a miner is saved.</div>
     <h2>Share difficulty per miner <span class="muted">only changes how often a miner sends shares, not your chance of a block</span></h2>
     <div class="setting-ctl" id="soloAll" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px">
@@ -599,6 +612,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <label><input type="checkbox" data-nt="offline"> A miner stops answering, or switches to its backup pool</label>
       <label><input type="checkbox" data-nt="hot"> A miner runs hot</label>
       <label><input type="checkbox" data-nt="node"> Node or Solo45 trouble <span class="muted">node behind or not answering, Solo45 down, a failed block check</span></label>
+      <label><input type="checkbox" data-nt="weekly"> Weekly report <span class="muted">Sunday morning: each miner's average hashrate, time online, rejects, power cost and best share of the week</span></label>
       <label>Warn after <input type="number" id="ntMin" min="1" max="240" step="1" style="width:60px"> minutes <span class="muted">problems that fix themselves sooner stay quiet; you also get a short all-clear</span></label>
     </div>
     <details style="margin-bottom:8px">
@@ -613,6 +627,7 @@ body.privacy .sensitive { filter: blur(6px); }
     <div class="setting-ctl" style="flex-wrap:wrap">
       <button class="btn small" id="ntSave" type="button">Save alerts</button>
       <button class="btn small" id="ntTest" type="button">Send test</button>
+      <button class="btn small" id="ntWeek" type="button">Send this week's report now</button>
       <span class="muted" id="ntNote"></span>
     </div>
     <div class="feed-head" id="ntLog" style="margin-top:8px"></div>
@@ -836,6 +851,8 @@ function render(s) {
   renderMiners(s);
   renderTuning(s);
   renderAvalon(s);
+  renderPayouts(s);
+  fillPayWatch(s);
   renderTuneHistory(s);
   renderBlocks(s);
   renderSolo(s);
@@ -999,6 +1016,20 @@ $("miners").addEventListener("click", e => {
   if (row && !e.target.closest("a")) toggleMiner(row);
 });
 $("miners").addEventListener("click", async e => {
+  const b = e.target.closest("button[data-forget]");
+  if (!b) return;
+  if (b.dataset.armed !== "1") {  // a second click confirms
+    b.dataset.armed = "1"; b.textContent = "Sure? Click again";
+    setTimeout(() => { if (b.isConnected && !b.disabled) { b.dataset.armed = ""; b.textContent = "Forget tuning history"; } }, 4000);
+    return;
+  }
+  b.disabled = true;
+  try {
+    const [r, j] = await minerPost({action: "forget", ip: b.dataset.forget});
+    b.textContent = r.ok ? `Forgotten (${j.changes} changes, ${j.floors} floors)` : "Not done: " + (j.error || r.status);
+  } catch (err) { b.textContent = "Not done: " + err.message; }
+});
+$("miners").addEventListener("click", async e => {
   const b = e.target.closest("button[data-rest]");
   if (!b) return;
   b.disabled = true;
@@ -1046,7 +1077,7 @@ function renderMiners(s) {
       const powerTitle = m.power_source === "psu" ? `Measured by the power supply${m.power_estimate ? ` (Braiins estimates ${Math.round(m.power_estimate)} W)` : ""}${m.psu_v ? `, ${m.psu_v.toFixed(2)} V` : ""}`
         : m.power_source === "estimate" ? "Braiins OS estimate (this power supply doesn't report its watts)" : "";
       rows.push(`<tr class="mrow${open ? " open" : ""}" data-miner="${esc(m.name)}" tabindex="0" aria-expanded="${open}" style="${off ? "opacity:.55" : ""}">
-        <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}</div></td>
+        <td class="first"><div class="mname"><span class="caret">▶</span> ${esc(m.name)}</div><div class="msub">${esc(m.model)}${m.on_fallback ? ' · <span class="hot">on its backup pool</span>' : ""}${m.other_coin ? ` · <span class="muted" title="Its shares there aren't Bitcoin shares, so they don't count toward best shares here">mining ${esc(m.other_coin)}</span>` : ""}</div></td>
         <td><span class="pill ${m.resting ? "resting" : m.status}">${esc(m.status_text)}</span></td>
         <td class="r num">${off ? "—" : fmtTH(m.ths)}${pct != null && !off ? `<div class="hbar" title="${pct.toFixed(0)}% of expected"><span style="width:${pct}%;background:${pct < 80 ? "var(--warn)" : "var(--ok)"}"></span></div>` : ""}</td>
         <td class="r num">${off ? "—" : temp}${sparkline(m.temp_trend)}</td>
@@ -1068,6 +1099,7 @@ function renderMiners(s) {
         ${m.uptime_24h != null ? d("Online, 24 h", (m.uptime_24h * 100).toFixed(m.uptime_24h >= 0.999 ? 0 : 1) + "%") : ""}
         ${seen != null && !off ? d("Pool sees", Math.round(seen * 100) + "% of its work") : ""}
         ${d("Address", `<a href="http://${esc(m.ip)}" target="_blank" rel="noopener" style="color:var(--solo45)" class="sensitive">${esc(m.ip)}</a>`)}
+        ${(m.kind === "bitaxe" || m.kind === "thor") && !off ? d("Replaced unit?", `<button class="btn small" data-forget="${esc(m.ip)}" title="Forget this miner's tuning history and voltage floors, e.g. after the unit or its chip was replaced">Forget tuning history</button>`) : ""}
         ${off ? d("Switched off?", m.resting
           ? `<button class="btn small" data-rest="${esc(m.ip)}" data-act="unrest">Not resting</button>`
           : `<button class="btn small" data-rest="${esc(m.ip)}" data-act="rest" title="Off on purpose: no red banner and no phone alerts. Ends by itself when it answers again.">Mark as resting</button>`) : ""}
@@ -1150,6 +1182,47 @@ let avalonSig = "", avalonMsgs = {};  // ip -> the last message under its button
 const AV_CHIP_WARM = 78, AV_CHIP_HOT = 85;   // chip colours; 85 °C is also where a held fan goes to 100%
 const avId = ip => "av-" + ip.replace(/\./g, "-");
 const avFanNow = m => m.fan_target ? "t" + m.fan_target : m.fan_setting ? String(m.fan_setting) : "auto";
+let payoutSig = "";
+function renderPayouts(s) {
+  const p = s.payouts || {}, coins = ["bch", "btc"].filter(c => p[c] && p[c].addr);
+  $("payoutCard").style.display = coins.length ? "" : "none";
+  if (!coins.length) return;
+  const sig = JSON.stringify(coins.map(c => [c, p[c].checked, p[c].error, p[c].rx.length]));
+  if (sig === payoutSig) return;
+  payoutSig = sig;
+  const now = Date.now() / 1000, amt = v => (v / 1e8).toFixed(8).replace(/0{1,4}$/, "");
+  $("payoutBox").innerHTML = coins.map(c => {
+    const q = p[c], unit = c.toUpperCase();
+    const sum = days => q.rx.filter(r => now - r[0] < days * 86400).reduce((x, r) => x + r[1], 0);
+    const total = q.rx.reduce((x, r) => x + r[1], 0);
+    const link = txid => c === "bch" ? `https://blockchair.com/bitcoin-cash/transaction/${txid}` : `https://mempool.space/tx/${txid}`;
+    const rows = q.rx.slice(0, 10).map(r => `<tr><td class="first">${esc(new Date(r[0] * 1000).toLocaleString([], {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}))}</td>
+      <td class="r num">${amt(r[1])} ${unit}</td><td>${r[2] ? "block reward" : "received"}</td>
+      <td class="hide-sm"><a href="${link(esc(r[3]))}" target="_blank" rel="noopener" style="color:var(--solo45)">${esc(r[3].slice(0, 10))}…</a></td></tr>`).join("");
+    return `<div class="feed-head" style="margin-bottom:6px"><b>${unit}</b>&nbsp; <span class="sensitive">${esc(q.addr.replace("bitcoincash:", "").slice(0, 10))}…</span>
+      &nbsp;· last 24 h <b class="num">${amt(sum(1))}</b> · 7 days <b class="num">${amt(sum(7))}</b> · 30 days <b class="num">${amt(sum(30))}</b>
+      · all <b class="num">${amt(total)}</b> <span class="muted">(${q.rx.length} payment${q.rx.length === 1 ? "" : "s"}${q.checked ? ", checked " + new Date(q.checked * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"}) : ""})</span>
+      ${q.error ? `<span class="hot"> · last check failed: ${esc(q.error)}</span>` : ""}</div>
+      ${rows ? `<div class="tablewrap" style="margin-bottom:12px"><table><thead><tr><th class="first">When</th><th class="r">Amount</th><th>Kind</th><th class="hide-sm">Transaction</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="faint" style="margin-bottom:12px">No payments yet.</div>`}`;
+  }).join("");
+}
+$("payWatchSave").addEventListener("click", async () => {
+  $("payWatchNote").textContent = "Saving…";
+  try {
+    const r = await fetch("api/dash/payouts", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({bch: $("payBch").value.trim(), btc: $("payBtc").value.trim()})});
+    const j = await r.json();
+    $("payWatchNote").textContent = r.ok ? ((j.payout_watch.bch || j.payout_watch.btc) ? "Saved: the first check runs now (see Details)." : "Saved: payouts off.") : `Not saved: ${j.error || r.status}`;
+    payWatchShown = "";
+  } catch (err) { $("payWatchNote").textContent = "Not saved: " + err.message; }
+});
+let payWatchShown = null;
+function fillPayWatch(s) {
+  const w = s.payout_watch || {}, sig = JSON.stringify(w);
+  if (sig === payWatchShown || document.activeElement === $("payBch") || document.activeElement === $("payBtc")) return;
+  payWatchShown = sig;
+  $("payBch").value = w.bch || ""; $("payBtc").value = w.btc || "";
+}
 function renderAvalon(s) {
   const av = (s.miners || []).filter(m => m.kind === "avalon" && m.status !== "offline")
     .sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
@@ -1176,6 +1249,8 @@ function renderAvalon(s) {
   for (const m of av) {
     const id = avId(m.ip), el = x => document.getElementById(id + x);
     if (!el("-fan")) continue;
+    if (m.fan_paused_until && m.fan_paused_until * 1000 > Date.now() && !avalonMsgs[m.ip])
+      el("-msg").textContent = `Fan control paused until ${new Date(m.fan_paused_until * 1000).toLocaleTimeString([], {hour: "numeric", minute: "2-digit"})}: another dashboard or app keeps changing this fan. Use Hold or Fixed in one dashboard only, and Miner auto in the other.`;
     const how = m.fan_target ? `holding ${m.fan_target} °C` : m.fan_setting ? `fixed ${m.fan_setting}%` : "miner auto";
     el("-fan").innerHTML = (m.fan != null ? Math.round(m.fan) + "%" : "—") + `<div class="msub">${m.fan_rpm != null ? Math.round(m.fan_rpm) + " rpm · " : ""}${how}</div>`;
     el("-temp").textContent = (m.temp != null ? Math.round(m.temp) + "°" : "—") + " / " + (m.temp_max != null ? Math.round(m.temp_max) + "°" : "—");
@@ -1636,6 +1711,14 @@ $("ntSave").addEventListener("click", async () => {
     $("ntNote").textContent = "Not saved: " + e.message;
   }
   $("ntSave").disabled = false;
+});
+$("ntWeek").addEventListener("click", async () => {
+  $("ntNote").textContent = "Sending…";
+  try {
+    const r = await fetch("api/notify/weekly", {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
+    const j = await r.json();
+    $("ntNote").textContent = r.ok ? "Sent: the week so far is on your phone." : `Not sent: ${j.error || r.status}`;
+  } catch (err) { $("ntNote").textContent = "Not sent: " + err.message; }
 });
 $("ntTest").addEventListener("click", async () => {
   $("ntTest").disabled = true;

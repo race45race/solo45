@@ -595,6 +595,85 @@ server.S["netdiff"] = _saved_nd
 server.S["miners"].clear()
 check("resting miner: no alert, not counted, saved, ends when it answers again", _rest_ok, _detail)
 check("a Bitaxe's found-block flag needs a share as big as the network difficulty", _bf_ok)
+# v0.1.76: weekly report, another coin, forget tuning history, Avalon fan tug-of-war, payouts
+_saved_week, _saved_bh, _saved_daily, _saved_nd = server.S["week"], server.S["best_history"], server.S["daily"], server.S["netdiff"]
+server.S["week"], server.S["netdiff"] = {}, 1.4e14
+_t0 = time.time() - 3 * 86400
+_ms = [{"name": "AxeA", "status": "ok", "ths": 1.8, "power": 30, "accepted": 100, "rejected": 1},
+       {"name": "AxeB", "status": "offline", "ths": 0, "power": 0},
+       {"name": "Rest", "status": "offline", "resting": True}]
+with server.lock:
+    server.track_week(_ms, _t0)
+    _ms[0].update(accepted=160, rejected=2)
+    server.track_week(_ms, _t0 + 30)
+    _ms[0].update(accepted=10, rejected=0)  # restarted
+    server.track_week(_ms, _t0 + 60)
+    _ms[1].update(status="ok", ths=1.0, power=20)
+    server.track_week(_ms, _t0 + 90)
+    _w = server.S["week"]["miners"]
+    server.S["best_history"] = [{"date": server.local_at(_t0).strftime("%Y-%m-%d"), "miners": {"AxeA": 5e8}}]
+    server.S["daily"] = {"date": "2000-01-01", "since": 0, "miners": {}}
+    _title, _body = server.week_report(_t0 + 3 * 86400)
+_wk_ok = (_w["AxeA"]["n"] == 4 and _w["AxeA"]["up"] == 4 and _w["AxeA"]["acc"] == 70 and _w["AxeA"]["rej"] == 1
+          and _w["AxeB"]["up"] == 1 and "Rest" not in _w and "AxeA: 1.80 TH/s, online 100%" in _body
+          and "best 500.00 M" in _body and "AxeB" in _body and "weekly report" in _title)
+check("weekly report: samples, restarts, resting miners left out, best share of the week", _wk_ok, "(%r)" % _body[:300])
+_oc = [server.other_coin({"user": "bitcoincash:qpsjfuc0kk2rl87psshthfn8c4p8kml0lczcghr586.Bx"}),
+       server.other_coin({"user": "qpsjfuc0kk2rl87psshthfn8c4p8kml0lczcghr586"}),
+       server.other_coin({"user": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4.Bx", "netdiff": 1.3e14}),
+       server.other_coin({"user": "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4.Bx", "netdiff": 4e11}),
+       server.other_coin({"user": "x", "netdiff": 1})]
+check("another coin: a BCH username or a far lower network difficulty, not a placeholder job",
+      _oc == ["BCH", "BCH", None, "another coin", None], "(%s)" % _oc)
+_spk = server.cashaddr_script("bitcoincash:qpsjfuc0kk2rl87psshthfn8c4p8kml0lczcghr586")
+_bad_addr = server.set_payout_watch.__code__ is not None and server.set_payout_watch({"bch": "notanaddress"})[0]
+check("payouts: CashAddr to its P2PKH script, bad addresses refused", len(_spk) == 25 and _spk[:3].hex() == "76a914"
+      and _spk[-2:].hex() == "88ac" and _bad_addr == 400)
+_orig_hj = server.http_json
+_addr = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
+server.http_json = lambda url, timeout=3, headers=None: [
+    {"txid": "aa", "status": {"block_time": 1000}, "vin": [{"is_coinbase": True}], "vout": [{"scriptpubkey_address": _addr, "value": 5000}]},
+    {"txid": "bb", "status": {"block_time": 900}, "vin": [{"prevout": {"scriptpubkey_address": _addr, "value": 7000}}],
+     "vout": [{"scriptpubkey_address": "x", "value": 6000}, {"scriptpubkey_address": _addr, "value": 900}]},
+    {"txid": "cc", "status": {}, "vin": [], "vout": [{"scriptpubkey_address": _addr, "value": 1}]}]
+try:
+    _rx = server.fetch_btc(_addr, {})
+finally:
+    server.http_json = _orig_hj
+check("payouts: BTC payments net of the address's own inputs, coinbase marked, unconfirmed skipped",
+      _rx == {"aa": [1000, 5000, True], "bb": [900, -6100, False]}, "(%s)" % _rx)
+# Avalon: a fan changed from elsewhere twice within 15 min pauses this dashboard's control
+_saved_tgt = dict(server.CFG.get("avalon_target") or {})
+server.CFG["avalon_target"] = {"10.9.9.50": 72}
+server.avalon_ctl.pop("10.9.9.50", None)
+_sent = []
+_orig_cmd = server.avalon_cmd
+server.avalon_cmd = lambda ip, k, v, timeout=4: (_sent.append(v), (True, "ok"))[1]
+try:
+    _n0 = 10000.0
+    server.avalon_fan_control("10.9.9.50", 75, 40, now=_n0)            # sets 45
+    server.avalon_fan_control("10.9.9.50", 75, 60, now=_n0 + 70)       # someone set 60: noted, then steps
+    _p1 = server.avalon_ctl["10.9.9.50"].get("paused_until", 0)
+    server.avalon_fan_control("10.9.9.50", 75, 30, now=_n0 + 200)      # changed again: pause
+    _p2 = server.avalon_ctl["10.9.9.50"].get("paused_until", 0)
+    _r = server.avalon_fan_control("10.9.9.50", 75, 30, now=_n0 + 300)  # paused: nothing sent
+finally:
+    server.avalon_cmd = _orig_cmd
+    server.CFG["avalon_target"] = _saved_tgt
+    server.avalon_ctl.pop("10.9.9.50", None)
+check("Avalon fan: changed from elsewhere twice, this dashboard steps back for 20-40 min",
+      _p1 == 0 and _n0 + 200 + 1200 <= _p2 <= _n0 + 200 + 2400 and _r is None and len(_sent) == 2, "(%s %s %s)" % (_sent, _p1, _p2))
+# forget tuning history
+server.S["miners"]["10.9.9.60"] = {"ip": "10.9.9.60", "name": "AxeF", "kind": "bitaxe"}
+server.tuning_history.extend([{"name": "AxeF", "at": 1}, {"name": "Other", "at": 2}])
+server.volt_floors["AxeF"] = {"800": {"mv": 1200, "freq": 800}}
+_fg = server.manage_miner({"action": "forget", "ip": "10.9.9.60"})
+check("forget a replaced miner's tuning history and voltage floors, others kept",
+      _fg[0] == 200 and _fg[1]["changes"] == 1 and _fg[1]["floors"] == 1 and "AxeF" not in server.volt_floors
+      and any(e.get("name") == "Other" for e in server.tuning_history) and not any(e.get("name") == "AxeF" for e in server.tuning_history))
+server.tuning_history[:] = [e for e in server.tuning_history if e.get("name") != "Other"]
+server.S["miners"].pop("10.9.9.60", None)
+server.S["week"], server.S["best_history"], server.S["daily"], server.S["netdiff"] = _saved_week, _saved_bh, _saved_daily, _saved_nd
 server.S["miners"].clear()
 server.S["miners"].update(_saved)
 _workers = server.S["solo45"].get("workers")
