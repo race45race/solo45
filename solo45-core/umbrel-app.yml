@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 SV2
-version: "0.0.28"
+version: "0.0.29"
 tagline: A fast solo mining pool with Stratum V2, in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  The pool's log now also shows in umbrelOS (open the app's logs), and Stratum V2 miners' share difficulty changes far less often: it uses the same calm rule as the Stratum V1 port. Your settings and miners carry over.
+  A sturdier pool: a found block is written safely to disk while it is sent, new-block work never waits behind a slow template, and Stratum V2 connections that go silent are closed like on the V1 port. Dashboard: mark a miner you switched off as Resting (no alerts), a clearer Stratum V2 card, and every pool gets its own chart colour. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core

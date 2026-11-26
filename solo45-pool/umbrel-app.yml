@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.74"
+version: "0.1.75"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  Small dashboard fix for the Solo45 SV2 app (best-share journeys). Nothing changes for Solo45.
+  Dashboard: mark a miner you switched off on purpose as Resting (no red banner, no phone alerts; it ends by itself when the miner is back), miners on Solo45 SV2 show its name, every pool gets its own chart colour, and some pools can no longer cause a false 'found a block' banner. The pool itself is unchanged.
 
 developer: race45race
 website: https://github.com/race45race/solo45
