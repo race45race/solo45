@@ -24,6 +24,7 @@
   /* stat tile fills: bright in both themes, always with dark text */
   --t-ink: #10141a; --t-orange: #f7931a; --t-sky: #5aa9ff; --t-green: #3ddc84;
   --t-violet: #b08cff; --t-amber: #ffc53d; --t-teal: #3cc3dc;
+  color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -33,6 +34,7 @@
     --ok: #3fbf74; --warn: #e3a33a; --bad: #f06a6a;
     --ok-bg: #12301f; --warn-bg: #33270f; --bad-bg: #3a1717;
     --shadow: none;
+    color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
@@ -42,6 +44,7 @@
   --ok: #3fbf74; --warn: #e3a33a; --bad: #f06a6a;
   --ok-bg: #12301f; --warn-bg: #33270f; --bad-bg: #3a1717;
   --shadow: none;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body {
