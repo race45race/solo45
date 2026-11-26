@@ -17,8 +17,10 @@ services:
       - "34255:34255"  # Stratum V2 (encrypted) for SV2 miners and the Translator Proxy
     volumes:
       - ${APP_DATA_DIR}/data:/data
+      - ${APP_BITCOIN_DATA_DIR}:/bitcoin:ro  # read-only: only for the node's IPC socket (its IPC Mining Interface)
     environment:
       SOLO45_DATA_DIR: /data
+      SOLO45_IPC_SOCKET: /bitcoin/${APP_BITCOIN_IPC_SOCKET_RELATIVE_PATH}  # templates over IPC when it's on; RPC otherwise
       SOLO45_LOG_FILE: /data/pool.log
       SOLO45_STRATUM_PORT: "3346"
       SOLO45_API_PORT: "3386"
