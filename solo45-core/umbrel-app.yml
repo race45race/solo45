@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-core
 category: bitcoin
 name: Solo45 SV2
-version: "0.0.32"
+version: "0.0.33"
 tagline: A fast solo mining pool with Stratum V2, in Rust (test version)
 icon: https://raw.githubusercontent.com/race45race/solo45-core/main/docs/icon.svg
 description: >-
@@ -27,7 +27,7 @@ description: >-
 
   This is a test version.
 releaseNotes: >-
-  Uses Bitcoin Core's IPC mining interface when you turn it on in the Bitcoin Node app (Settings, IPC Mining Interface): a new block's full work then reaches your miners in milliseconds. With it off, nothing changes: the pool uses your node's RPC as before. Your settings and miners carry over.
+  The Stratum V2 card in Settings now shows where block templates come from (your node's IPC mining interface or getblocktemplate), why the pool last used getblocktemplate, and any template from the node it had to skip. Mining is unchanged. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45-core
