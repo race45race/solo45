@@ -2,7 +2,7 @@ manifestVersion: 1
 id: solo45-pool
 category: bitcoin
 name: Solo45
-version: "0.1.76"
+version: "0.1.78"
 tagline: Your own solo mining pool and live mining dashboard
 icon: https://raw.githubusercontent.com/race45race/solo45/main/src/static/icon-512.png
 description: >-
@@ -20,7 +20,7 @@ description: >-
 
   • Everything stays on your network: no accounts, no cloud services, no API keys.
 releaseNotes: >-
-  Dashboard: a weekly phone report every Sunday morning (each miner's hashrate, time online, rejects, power cost and best share of the week), an optional Pool payouts card for what other pools paid you, shares mined on another coin no longer count toward your Bitcoin best-share records, a Forget tuning history button for a replaced miner, and two dashboards no longer fight over an Avalon's fan. The pool itself is unchanged.
+  Small dashboard fix: the dashboard now cleanly refuses malformed or oversized change requests. The pool itself is unchanged. Your settings and miners carry over.
 
 developer: race45race
 website: https://github.com/race45race/solo45

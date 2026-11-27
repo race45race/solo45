@@ -36,7 +36,7 @@ services:
         ipv4_address: ${APP_SOLO45_CORE_IP}
 
   dashboard:  # the full Solo45 dashboard (same program as the Solo45 app's), named Solo45 SV2, reading only this pool
-    image: ghcr.io/race45race/solo45:v0.1.77@sha256:b126faaf42d5b2578ed40b1a16f35b8ecf0d5044b0a3e2f63830aef7c94d0905
+    image: ghcr.io/race45race/solo45:v0.1.78@sha256:1a446426559eea5fc64cb4a9e2a606dedcef7213fbafcce3d562242a8d8c3768
     user: "1000:1000"
     restart: on-failure
     stop_grace_period: 30s
