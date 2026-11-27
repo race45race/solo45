@@ -3106,8 +3106,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0]
         try:
-            length = min(int(self.headers.get("Content-Length") or 0), 200000 if path == "/api/restore" else 20000)
+            limit = 200000 if path == "/api/restore" else 20000
+            length = int(self.headers.get("Content-Length") or 0)
+            if length < 0 or length > limit:
+                self.close_connection = True  # the body is left unread: this connection can't carry another request
+                return self.send(413, b'{"error":"request too large"}', "application/json")
             data = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(data, dict):
+                raise ValueError("not a JSON object")
         except ValueError:
             return self.send(400, b'{"error":"bad request"}', "application/json")
         if not self.from_proxy():

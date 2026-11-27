@@ -9,6 +9,7 @@ this platform. It also times the heaviest step (checking a full template).
 """
 import asyncio
 import hashlib
+import io
 import json
 import os
 import platform
@@ -1332,6 +1333,21 @@ check("junk usernames: no lookup for worker names, address cache capped, authori
       and _sp.calls == 1 + P.SPK_CACHE_MAX + 50 and _jlim and not P.address_plausible("x" * 24)
       and not P.address_plausible("bc1q-" + "a" * 30) and P.address_plausible("bc1p" + "a" * 58),
       "(calls %d, cache %d, limit %s)" % (_sp.calls, len(_sp.spk_cache), _jlim))
+# v0.1.78: a POST body that isn't a JSON object is a 400, one over the size limit a 413 (not cut and parsed)
+def _post(path, body, length=None):
+    got = []
+    h = types.SimpleNamespace(path=path, rfile=io.BytesIO(body), close_connection=False, client_address=("10.0.0.9", 1),
+                              headers={"Content-Length": str(len(body) if length is None else length)},
+                              send=lambda code, b, ctype: got.append(code), from_proxy=lambda: False, same_origin=lambda: True)
+    server.Handler.do_POST(h)
+    return got[0] if got else None, h.close_connection
+
+
+_pb = [_post("/api/dash/miner", b"[1, 2]"), _post("/api/dash/miner", b'"x"'), _post("/api/dash/miner", b"\xff\xfe"),
+       _post("/api/dash/miner", b"x" * 20001), _post("/api/dash/miner", b"{}", length=-5),
+       _post("/api/restore", b"{" + b" " * 30000 + b"}"), _post("/api/dash/miner", b'{"a": 1}')]
+check("dashboard POST: non-object JSON 400, too large 413 (connection closed), restore allows more, a good body goes on",
+      [c for c, _ in _pb] == [400, 400, 400, 413, 413, 403, 403] and _pb[3][1] and not _pb[0][1], str(_pb))
 # v0.1.77: the Stratum V2 card shows Solo45 SV2's template source (pool.ipc), why it used getblocktemplate, skips
 _ih = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), encoding="utf-8").read()
 check("SV2 card: template source line (IPC / getblocktemplate, fallback reason, skipped templates)",
