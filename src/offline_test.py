@@ -1332,6 +1332,11 @@ check("junk usernames: no lookup for worker names, address cache capped, authori
       and _sp.calls == 1 + P.SPK_CACHE_MAX + 50 and _jlim and not P.address_plausible("x" * 24)
       and not P.address_plausible("bc1q-" + "a" * 30) and P.address_plausible("bc1p" + "a" * 58),
       "(calls %d, cache %d, limit %s)" % (_sp.calls, len(_sp.spk_cache), _jlim))
+# v0.1.77: the Stratum V2 card shows Solo45 SV2's template source (pool.ipc), why it used getblocktemplate, skips
+_ih = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "index.html"), encoding="utf-8").read()
+check("SV2 card: template source line (IPC / getblocktemplate, fallback reason, skipped templates)",
+      'id="sv2Ipc"' in _ih and "function ipcLine(ipc)" in _ih and "ipc.last_skip" in _ih and "fb.reason" in _ih
+      and _ih.count("esc(ipc.error)") == 1)
 print("timing: policy check of %d txs %.0f ms, two jobs %.0f ms" % (len(txs), t_eval, t_job))
 print("%d/%d passed" % (sum(results), len(results)))
 sys.exit(0 if all(results) else 1)

@@ -559,6 +559,7 @@ body.privacy .sensitive { filter: blur(6px); }
       <div class="num" id="sv2Url" style="word-break:break-all;font-size:13px">-</div>
       <div class="ai-foot" style="margin:6px 0 0">Bitaxes (AxeOS 2.15+): Stratum V2 pool, this Umbrel's IP, the port above and the key.
         Stratum V1 miners use port <b class="num" id="sv2V1">-</b>.</div>
+      <div class="ai-foot" id="sv2Ipc" hidden style="margin:8px 0 0;line-height:1.7"></div>
     </section>
 
   <section class="card" id="policyCard" style="margin-bottom:12px">
@@ -739,6 +740,35 @@ function fmtDiff(d) {
   for (const [s, v] of u) if (d >= v) return (d / v).toFixed(d / v >= 100 ? 0 : d / v >= 10 ? 1 : 2) + " " + s;
   return Math.round(d).toString();
 }
+// Where Solo45 SV2's block templates come from: the node's IPC mining interface (a new block's full work in
+// milliseconds) or getblocktemplate; with pool 0.0.31+ also why it last used getblocktemplate and what it skipped.
+let ipcHtml = "";
+function ipcLine(ipc) {
+  const n = v => Number(v || 0).toLocaleString();
+  const ago = a => a == null ? "" : a < 1 ? "just now" : fmtDur(a) + " ago";
+  const parts = [];
+  if (ipc.up) {
+    parts.push(`Block templates: <span class="pill ok">IPC</span> over the node's IPC mining interface`
+      + (ipc.age_s != null ? `, newest ${ago(ipc.age_s)}` : ""));
+  } else if (/no IPC socket/.test(ipc.error || "")) {
+    parts.push(`Block templates: <span class="pill">RPC</span> from getblocktemplate. For faster ones, turn on `
+      + `<b>IPC Mining Interface</b> in the Bitcoin Node app's settings`);
+  } else {
+    parts.push(`Block templates: <span class="pill warn">IPC down</span> from getblocktemplate meanwhile`
+      + (ipc.error ? ` (${esc(ipc.error)})` : ""));
+  }
+  if (ipc.used != null) parts.push(`since the pool started: ${n(ipc.used)} from IPC, ${n(ipc.rpc_used)} from getblocktemplate`);
+  const fb = ipc.fallback;
+  if (ipc.up && fb && fb.age_s < 3600) parts.push(`last getblocktemplate ${ago(fb.age_s)}: ${esc(fb.reason)}`);
+  if (ipc.skipped) {
+    const ls = ipc.last_skip;
+    parts.push(`<span class="pill warn">${n(ipc.skipped)} skipped</span> template${ipc.skipped > 1 ? "s" : ""} from the node`
+      + (ls ? `, last ${ago(ls.age_s)}: ${esc(ls.reason)}` : ""));
+  }
+  if (ipc.reconnects) parts.push(`reconnected ${n(ipc.reconnects)} time${ipc.reconnects > 1 ? "s" : ""}`);
+  return parts.join(" · ");
+}
+
 function fmtDur(s) {
   if (s == null || !isFinite(s)) return "—";
   s = Math.max(0, s);
@@ -815,6 +845,12 @@ function render(s) {
     const host = /^\d{1,3}(\.\d{1,3}){3}$/.test(location.hostname) && location.hostname !== "127.0.0.1" ? location.hostname : "<your Umbrel's IP>";
     $("sv2Url").textContent = `stratum2+tcp://${host}:${sv2.port}/${sv2.authority_pubkey || ""}`;
     $("sv2V1").textContent = (s.solo45 || {}).stratum_port || "-";
+  }
+  const ipc = (s.solo45 || {}).ipc;  // Solo45 SV2's block templates: the node's IPC mining interface or getblocktemplate
+  $("sv2Ipc").hidden = !ipc;
+  if (ipc) {
+    const h = ipcLine(ipc);
+    if (h !== ipcHtml) { ipcHtml = h; $("sv2Ipc").innerHTML = `<span>${h}</span>`; }  // one flex item: wraps as text
   }
   // the odds of a block for Solo45: only its own miners count (miners on other pools win for those pools)
   const multi = pools.length > 1 && T.by_pool[OWN] != null;
